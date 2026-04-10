@@ -243,8 +243,8 @@ func TestMetadata(t *testing.T) {
 		t.Fatalf("Metadata: %v", err)
 	}
 
-	if meta.FormatVersion != FormatVersion {
-		t.Fatalf("format: got %d, want %d", meta.FormatVersion, FormatVersion)
+	if meta.FormatVersion != FormatV1 {
+		t.Fatalf("format: got %d, want %d", meta.FormatVersion, FormatV1)
 	}
 	if meta.ValueVersion != 42 {
 		t.Fatalf("version: got %d, want 42", meta.ValueVersion)
@@ -277,5 +277,181 @@ func TestMarshalUnmarshalRoundtrip(t *testing.T) {
 
 	if !bytes.Equal(original, remarshaled) {
 		t.Fatal("marshal roundtrip mismatch")
+	}
+}
+
+// --- v0 tests ---
+
+func TestV0SealAndOpen(t *testing.T) {
+	key := randomKey(t)
+	value := []byte("hello v0")
+
+	blob, err := SealV0(value, key)
+	if err != nil {
+		t.Fatalf("SealV0: %v", err)
+	}
+
+	if blob[0] != FormatV0 {
+		t.Fatalf("first byte: got %d, want %d", blob[0], FormatV0)
+	}
+
+	plaintext, err := OpenV0(blob, key)
+	if err != nil {
+		t.Fatalf("OpenV0: %v", err)
+	}
+
+	if !bytes.Equal(plaintext, value) {
+		t.Fatalf("got %q, want %q", plaintext, value)
+	}
+}
+
+func TestV0WrongKey(t *testing.T) {
+	key := randomKey(t)
+	wrongKey := randomKey(t)
+
+	blob, err := SealV0([]byte("secret"), key)
+	if err != nil {
+		t.Fatalf("SealV0: %v", err)
+	}
+
+	_, err = OpenV0(blob, wrongKey)
+	if err != ErrDecryptionFailed {
+		t.Fatalf("expected ErrDecryptionFailed, got %v", err)
+	}
+}
+
+func TestV0InvalidKeySize(t *testing.T) {
+	_, err := SealV0([]byte("data"), []byte("short"))
+	if err != ErrInvalidKeySize {
+		t.Fatalf("expected ErrInvalidKeySize, got %v", err)
+	}
+}
+
+func TestV0EmptyValue(t *testing.T) {
+	key := randomKey(t)
+
+	blob, err := SealV0([]byte{}, key)
+	if err != nil {
+		t.Fatalf("SealV0 empty: %v", err)
+	}
+
+	plaintext, err := OpenV0(blob, key)
+	if err != nil {
+		t.Fatalf("OpenV0 empty: %v", err)
+	}
+	if len(plaintext) != 0 {
+		t.Fatalf("expected empty, got %d bytes", len(plaintext))
+	}
+}
+
+func TestV0OpenViaGenericOpen(t *testing.T) {
+	key := randomKey(t)
+	value := []byte("dispatched via Open()")
+
+	blob, err := SealV0(value, key)
+	if err != nil {
+		t.Fatalf("SealV0: %v", err)
+	}
+
+	plaintext, meta, err := Open(blob, key)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	if !bytes.Equal(plaintext, value) {
+		t.Fatalf("got %q, want %q", plaintext, value)
+	}
+	if meta.FormatVersion != FormatV0 {
+		t.Fatalf("format: got %d, want %d", meta.FormatVersion, FormatV0)
+	}
+}
+
+func TestV1OpenViaGenericOpen(t *testing.T) {
+	key := randomKey(t)
+	value := []byte("dispatched via Open() v1")
+
+	blob, err := Seal(value, [][]byte{key}, time.Now(), 1)
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	plaintext, meta, err := Open(blob, key)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	if !bytes.Equal(plaintext, value) {
+		t.Fatalf("got %q, want %q", plaintext, value)
+	}
+	if meta.FormatVersion != FormatV1 {
+		t.Fatalf("format: got %d, want %d", meta.FormatVersion, FormatV1)
+	}
+}
+
+func TestV0AddKeySlotRejected(t *testing.T) {
+	key := randomKey(t)
+	newKey := randomKey(t)
+
+	blob, err := SealV0([]byte("data"), key)
+	if err != nil {
+		t.Fatalf("SealV0: %v", err)
+	}
+
+	_, err = AddKeySlot(blob, key, newKey)
+	if err != ErrV0NoKeySlots {
+		t.Fatalf("expected ErrV0NoKeySlots, got %v", err)
+	}
+}
+
+func TestV0RemoveKeySlotRejected(t *testing.T) {
+	key := randomKey(t)
+
+	blob, err := SealV0([]byte("data"), key)
+	if err != nil {
+		t.Fatalf("SealV0: %v", err)
+	}
+
+	_, err = RemoveKeySlot(blob, key, key)
+	if err != ErrV0NoKeySlots {
+		t.Fatalf("expected ErrV0NoKeySlots, got %v", err)
+	}
+}
+
+func TestV0Metadata(t *testing.T) {
+	key := randomKey(t)
+
+	blob, err := SealV0([]byte("data"), key)
+	if err != nil {
+		t.Fatalf("SealV0: %v", err)
+	}
+
+	meta, err := Metadata(blob)
+	if err != nil {
+		t.Fatalf("Metadata: %v", err)
+	}
+	if meta.FormatVersion != FormatV0 {
+		t.Fatalf("format: got %d, want %d", meta.FormatVersion, FormatV0)
+	}
+}
+
+func TestDetectFormat(t *testing.T) {
+	key := randomKey(t)
+
+	v0, _ := SealV0([]byte("v0"), key)
+	v1, _ := Seal([]byte("v1"), [][]byte{key}, time.Now(), 1)
+
+	f0, err := DetectFormat(v0)
+	if err != nil || f0 != FormatV0 {
+		t.Fatalf("v0: got %d, err %v", f0, err)
+	}
+
+	f1, err := DetectFormat(v1)
+	if err != nil || f1 != FormatV1 {
+		t.Fatalf("v1: got %d, err %v", f1, err)
+	}
+
+	_, err = DetectFormat([]byte{})
+	if err != ErrInvalidEnvelope {
+		t.Fatalf("empty: expected ErrInvalidEnvelope, got %v", err)
 	}
 }

@@ -24,8 +24,10 @@ func NewKVHandler(store *store.R2Store) *KVHandler {
 
 // PUT /kv/{key}
 type PutRequest struct {
-	Value          string   `json:"value"`           // base64-encoded
-	EncryptionKeys []string `json:"encryption_keys"` // base64-encoded 32-byte keys
+	Value          string   `json:"value"`                     // base64-encoded
+	EncryptionKeys []string `json:"encryption_keys,omitempty"` // base64-encoded 32-byte keys (required for v1)
+	EncryptionKey  string   `json:"encryption_key,omitempty"`  // single base64 key (required for v0)
+	Format         *int     `json:"format,omitempty"`          // 0 or 1 (default: 1)
 }
 
 type PutResponse struct {
@@ -47,9 +49,10 @@ type RemoveKeyRequest struct {
 
 // GET /kv/{key} response
 type GetResponse struct {
-	Value     string `json:"value"`      // base64-encoded
-	Version   uint64 `json:"version"`
-	CreatedAt string `json:"created_at"`
+	Value     string `json:"value"`                // base64-encoded
+	Version   uint64 `json:"version,omitempty"`    // v1 only
+	CreatedAt string `json:"created_at,omitempty"` // v1 only
+	Format    uint8  `json:"format"`
 }
 
 // HEAD /kv/{key} metadata
@@ -124,47 +127,86 @@ func (h *KVHandler) handlePut(w http.ResponseWriter, r *http.Request, key string
 		return
 	}
 
-	userKeys, err := decodeKeys(req.EncryptionKeys)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	format := uint8(crypto.FormatV1)
+	if req.Format != nil {
+		format = uint8(*req.Format)
 	}
 
-	// Check if key already exists to determine version and createdAt
-	var version uint64 = 1
-	createdAt := time.Now()
+	var blob []byte
 
-	existing, err := h.store.Get(r.Context(), key)
-	if err != nil {
-		log.Errorf("failed to check existing key: %v", err)
-		writeError(w, http.StatusInternalServerError, "storage error")
-		return
-	}
-	if existing != nil {
-		meta, err := crypto.Metadata(existing)
-		if err == nil {
-			version = meta.ValueVersion + 1
-			createdAt = meta.CreatedAt
+	switch format {
+	case crypto.FormatV0:
+		if req.EncryptionKey == "" {
+			writeError(w, http.StatusBadRequest, "encryption_key is required for v0 format")
+			return
 		}
-	}
+		userKey, err := base64.StdEncoding.DecodeString(req.EncryptionKey)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid base64 encryption_key")
+			return
+		}
+		blob, err = crypto.SealV0(value, userKey)
+		if err != nil {
+			log.Errorf("failed to seal v0: %v", err)
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 
-	envelope, err := crypto.Seal(value, userKeys, createdAt, version)
-	if err != nil {
-		log.Errorf("failed to seal: %v", err)
-		writeError(w, http.StatusBadRequest, err.Error())
+	case crypto.FormatV1:
+		userKeys, err := decodeKeys(req.EncryptionKeys)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		var version uint64 = 1
+		createdAt := time.Now()
+
+		existing, err := h.store.Get(r.Context(), key)
+		if err != nil {
+			log.Errorf("failed to check existing key: %v", err)
+			writeError(w, http.StatusInternalServerError, "storage error")
+			return
+		}
+		if existing != nil {
+			meta, err := crypto.Metadata(existing)
+			if err == nil && meta.FormatVersion == crypto.FormatV1 {
+				version = meta.ValueVersion + 1
+				createdAt = meta.CreatedAt
+			}
+		}
+
+		blob, err = crypto.Seal(value, userKeys, createdAt, version)
+		if err != nil {
+			log.Errorf("failed to seal v1: %v", err)
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		if err := h.store.Put(r.Context(), key, blob); err != nil {
+			log.Errorf("failed to store: %v", err)
+			writeError(w, http.StatusInternalServerError, "storage error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, PutResponse{
+			Version:   version,
+			CreatedAt: createdAt.UTC().Format(time.RFC3339Nano),
+		})
+		return
+
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported format: %d", format))
 		return
 	}
 
-	if err := h.store.Put(r.Context(), key, envelope); err != nil {
+	if err := h.store.Put(r.Context(), key, blob); err != nil {
 		log.Errorf("failed to store: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, PutResponse{
-		Version:   version,
-		CreatedAt: createdAt.UTC().Format(time.RFC3339Nano),
-	})
+	writeJSON(w, http.StatusOK, PutResponse{})
 }
 
 func (h *KVHandler) handleGet(w http.ResponseWriter, r *http.Request, key string) {
@@ -208,11 +250,15 @@ func (h *KVHandler) handleGet(w http.ResponseWriter, r *http.Request, key string
 		return
 	}
 
-	writeJSON(w, http.StatusOK, GetResponse{
-		Value:     base64.StdEncoding.EncodeToString(plaintext),
-		Version:   meta.ValueVersion,
-		CreatedAt: meta.CreatedAt.UTC().Format(time.RFC3339Nano),
-	})
+	resp := GetResponse{
+		Value:  base64.StdEncoding.EncodeToString(plaintext),
+		Format: meta.FormatVersion,
+	}
+	if meta.FormatVersion == crypto.FormatV1 {
+		resp.Version = meta.ValueVersion
+		resp.CreatedAt = meta.CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *KVHandler) handleHead(w http.ResponseWriter, r *http.Request, key string) {
@@ -233,9 +279,12 @@ func (h *KVHandler) handleHead(w http.ResponseWriter, r *http.Request, key strin
 		return
 	}
 
-	w.Header().Set("X-Version", strconv.FormatUint(meta.ValueVersion, 10))
-	w.Header().Set("X-Created-At", meta.CreatedAt.UTC().Format(time.RFC3339Nano))
-	w.Header().Set("X-Num-Keys", strconv.Itoa(len(meta.KeySlots)))
+	w.Header().Set("X-Format", strconv.Itoa(int(meta.FormatVersion)))
+	if meta.FormatVersion == crypto.FormatV1 {
+		w.Header().Set("X-Version", strconv.FormatUint(meta.ValueVersion, 10))
+		w.Header().Set("X-Created-At", meta.CreatedAt.UTC().Format(time.RFC3339Nano))
+		w.Header().Set("X-Num-Keys", strconv.Itoa(len(meta.KeySlots)))
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -286,6 +335,8 @@ func (h *KVHandler) handleAddKey(w http.ResponseWriter, r *http.Request, key str
 		case crypto.ErrDuplicateKey:
 			status = http.StatusConflict
 		case crypto.ErrInvalidKeySize:
+			status = http.StatusBadRequest
+		case crypto.ErrV0NoKeySlots:
 			status = http.StatusBadRequest
 		}
 		writeError(w, status, err.Error())
@@ -339,6 +390,8 @@ func (h *KVHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, key 
 		case crypto.ErrLastKey:
 			status = http.StatusConflict
 		case crypto.ErrInvalidKeySize:
+			status = http.StatusBadRequest
+		case crypto.ErrV0NoKeySlots:
 			status = http.StatusBadRequest
 		}
 		writeError(w, status, err.Error())

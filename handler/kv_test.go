@@ -295,3 +295,124 @@ func TestAddAndRemoveKey(t *testing.T) {
 		t.Fatalf("GET with removed key: got %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
+
+func TestV0PutAndGet(t *testing.T) {
+	h := setupHandler()
+	key := randomKeyB64(t)
+	value := base64.StdEncoding.EncodeToString([]byte("v0 data"))
+	format := 0
+
+	body, _ := json.Marshal(PutRequest{
+		Value:         value,
+		EncryptionKey: key,
+		Format:        &format,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/kv/v0-test", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT v0: got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	// GET with same key
+	req = httptest.NewRequest(http.MethodGet, "/kv/v0-test", nil)
+	req.Header.Set("X-Encryption-Key", key)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET v0: got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var getResp GetResponse
+	json.NewDecoder(rec.Body).Decode(&getResp)
+	if getResp.Value != value {
+		t.Fatalf("value: got %q, want %q", getResp.Value, value)
+	}
+	if getResp.Format != 0 {
+		t.Fatalf("format: got %d, want 0", getResp.Format)
+	}
+}
+
+func TestV0WrongKey(t *testing.T) {
+	h := setupHandler()
+	key := randomKeyB64(t)
+	wrongKey := randomKeyB64(t)
+	value := base64.StdEncoding.EncodeToString([]byte("secret"))
+	format := 0
+
+	body, _ := json.Marshal(PutRequest{
+		Value:         value,
+		EncryptionKey: key,
+		Format:        &format,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/kv/v0-wrong", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	req = httptest.NewRequest(http.MethodGet, "/kv/v0-wrong", nil)
+	req.Header.Set("X-Encryption-Key", wrongKey)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("got %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestV0AddKeyRejected(t *testing.T) {
+	h := setupHandler()
+	key := randomKeyB64(t)
+	newKey := randomKeyB64(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+	format := 0
+
+	body, _ := json.Marshal(PutRequest{
+		Value:         value,
+		EncryptionKey: key,
+		Format:        &format,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/kv/v0-nokeys", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	body, _ = json.Marshal(AddKeyRequest{ExistingKey: key, NewKey: newKey})
+	req = httptest.NewRequest(http.MethodPost, "/kv/v0-nokeys/keys", bytes.NewReader(body))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("AddKey on v0: got %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestV0HeadFormat(t *testing.T) {
+	h := setupHandler()
+	key := randomKeyB64(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+	format := 0
+
+	body, _ := json.Marshal(PutRequest{
+		Value:         value,
+		EncryptionKey: key,
+		Format:        &format,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/kv/v0-head", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	req = httptest.NewRequest(http.MethodHead, "/kv/v0-head", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HEAD v0: got %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec.Header().Get("X-Format") != "0" {
+		t.Fatalf("X-Format: got %q, want %q", rec.Header().Get("X-Format"), "0")
+	}
+	if rec.Header().Get("X-Version") != "" {
+		t.Fatalf("X-Version should be empty for v0, got %q", rec.Header().Get("X-Version"))
+	}
+}

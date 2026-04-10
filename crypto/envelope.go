@@ -13,16 +13,19 @@ import (
 )
 
 const (
-	FormatVersion = 1
+	FormatV0 = 0 // Direct AES-256-GCM: version(1) + IV(12) + ciphertext (key used directly)
+	FormatV1 = 1 // Envelope: version(1) + header + key slots + IV(12) + ciphertext (DEK wrapped)
 
 	KeySize   = 32 // AES-256
 	NonceSize = 12 // AES-GCM standard nonce
 	TagSize   = 16 // AES-GCM authentication tag
 
-	KeyIDSize       = 32                              // SHA-256 of user key
-	EncryptedDEKLen = NonceSize + KeySize + TagSize    // IV + encrypted DEK + tag
-	KeySlotSize     = KeyIDSize + EncryptedDEKLen      // 32 + 60 = 92 bytes
-	HeaderSize      = 1 + 2 + 8 + 8                   // format(1) + numSlots(2) + createdAt(8) + version(8) = 19 bytes
+	KeyIDSize       = 32                           // SHA-256 of user key
+	EncryptedDEKLen = NonceSize + KeySize + TagSize // IV + encrypted DEK + tag
+	KeySlotSize     = KeyIDSize + EncryptedDEKLen   // 32 + 60 = 92 bytes
+	V1HeaderSize    = 1 + 2 + 8 + 8                // format(1) + numSlots(2) + createdAt(8) + version(8) = 19 bytes
+	V0HeaderSize    = 1                             // format(1) only
+	V0MinSize       = V0HeaderSize + NonceSize + TagSize
 )
 
 var (
@@ -34,6 +37,7 @@ var (
 	ErrUnsupportedFormat = errors.New("unsupported envelope format version")
 	ErrDuplicateKey      = errors.New("key already exists in envelope")
 	ErrLastKey           = errors.New("cannot remove the last key slot")
+	ErrV0NoKeySlots      = errors.New("v0 format does not support key slot operations")
 )
 
 // Envelope represents the encrypted blob stored in R2.
@@ -57,7 +61,98 @@ func KeyID(userKey []byte) [KeyIDSize]byte {
 	return sha256.Sum256(userKey)
 }
 
-// Seal encrypts a plaintext value, wrapping the DEK under each provided user key.
+// DetectFormat returns the format version of a blob without fully parsing it.
+func DetectFormat(data []byte) (uint8, error) {
+	if len(data) == 0 {
+		return 0, ErrInvalidEnvelope
+	}
+	return data[0], nil
+}
+
+// SealV0 encrypts a plaintext value directly with the provided key (no DEK, no key slots).
+// Format: 0x00 || IV(12) || AES-GCM(key, plaintext)
+func SealV0(value []byte, key []byte) ([]byte, error) {
+	if len(key) != KeySize {
+		return nil, ErrInvalidKeySize
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("creating cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("creating GCM: %w", err)
+	}
+
+	nonce := make([]byte, NonceSize)
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, fmt.Errorf("generating nonce: %w", err)
+	}
+
+	ciphertext := gcm.Seal(nil, nonce, value, nil)
+
+	buf := make([]byte, V0HeaderSize+NonceSize+len(ciphertext))
+	buf[0] = FormatV0
+	copy(buf[V0HeaderSize:], nonce)
+	copy(buf[V0HeaderSize+NonceSize:], ciphertext)
+
+	return buf, nil
+}
+
+// OpenV0 decrypts a v0 blob directly with the provided key.
+func OpenV0(data []byte, key []byte) ([]byte, error) {
+	if len(key) != KeySize {
+		return nil, ErrInvalidKeySize
+	}
+	if len(data) < V0MinSize {
+		return nil, ErrInvalidEnvelope
+	}
+	if data[0] != FormatV0 {
+		return nil, fmt.Errorf("%w: expected v0, got v%d", ErrUnsupportedFormat, data[0])
+	}
+
+	nonce := data[V0HeaderSize : V0HeaderSize+NonceSize]
+	ciphertext := data[V0HeaderSize+NonceSize:]
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("creating cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("creating GCM: %w", err)
+	}
+
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, ErrDecryptionFailed
+	}
+
+	return plaintext, nil
+}
+
+// Open decrypts a blob, auto-detecting the format version.
+func Open(data []byte, userKey []byte) ([]byte, *Envelope, error) {
+	if len(data) == 0 {
+		return nil, nil, ErrInvalidEnvelope
+	}
+
+	switch data[0] {
+	case FormatV0:
+		plaintext, err := OpenV0(data, userKey)
+		if err != nil {
+			return nil, nil, err
+		}
+		return plaintext, &Envelope{FormatVersion: FormatV0}, nil
+	case FormatV1:
+		return openV1(data, userKey)
+	default:
+		return nil, nil, fmt.Errorf("%w: got %d", ErrUnsupportedFormat, data[0])
+	}
+}
+
+// Seal encrypts a plaintext value using v1 envelope format, wrapping the DEK under each provided user key.
 func Seal(value []byte, userKeys [][]byte, createdAt time.Time, valueVersion uint64) ([]byte, error) {
 	if len(userKeys) == 0 {
 		return nil, ErrNoKeySlots
@@ -101,7 +196,7 @@ func Seal(value []byte, userKeys [][]byte, createdAt time.Time, valueVersion uin
 	}
 
 	env := &Envelope{
-		FormatVersion: FormatVersion,
+		FormatVersion: FormatV1,
 		CreatedAt:     createdAt,
 		ValueVersion:  valueVersion,
 		KeySlots:      slots,
@@ -112,8 +207,8 @@ func Seal(value []byte, userKeys [][]byte, createdAt time.Time, valueVersion uin
 	return env.Marshal()
 }
 
-// Open decrypts an envelope using the provided user key.
-func Open(data []byte, userKey []byte) ([]byte, *Envelope, error) {
+// openV1 decrypts a v1 envelope using the provided user key.
+func openV1(data []byte, userKey []byte) ([]byte, *Envelope, error) {
 	if len(userKey) != KeySize {
 		return nil, nil, ErrInvalidKeySize
 	}
@@ -145,8 +240,11 @@ func Open(data []byte, userKey []byte) ([]byte, *Envelope, error) {
 	return plaintext, env, nil
 }
 
-// AddKeySlot adds a new key slot to an existing envelope without re-encrypting the value.
+// AddKeySlot adds a new key slot to an existing v1 envelope without re-encrypting the value.
 func AddKeySlot(data []byte, existingKey, newKey []byte) ([]byte, error) {
+	if len(data) > 0 && data[0] == FormatV0 {
+		return nil, ErrV0NoKeySlots
+	}
 	if len(existingKey) != KeySize || len(newKey) != KeySize {
 		return nil, ErrInvalidKeySize
 	}
@@ -178,8 +276,11 @@ func AddKeySlot(data []byte, existingKey, newKey []byte) ([]byte, error) {
 	return env.Marshal()
 }
 
-// RemoveKeySlot removes a key slot from an existing envelope.
+// RemoveKeySlot removes a key slot from an existing v1 envelope.
 func RemoveKeySlot(data []byte, existingKey, removeKey []byte) ([]byte, error) {
+	if len(data) > 0 && data[0] == FormatV0 {
+		return nil, ErrV0NoKeySlots
+	}
 	if len(existingKey) != KeySize || len(removeKey) != KeySize {
 		return nil, ErrInvalidKeySize
 	}
@@ -218,13 +319,20 @@ func RemoveKeySlot(data []byte, existingKey, removeKey []byte) ([]byte, error) {
 }
 
 // Metadata returns envelope metadata without decrypting the value.
+// For v0, returns a minimal Envelope with only FormatVersion set.
 func Metadata(data []byte) (*Envelope, error) {
+	if len(data) == 0 {
+		return nil, ErrInvalidEnvelope
+	}
+	if data[0] == FormatV0 {
+		return &Envelope{FormatVersion: FormatV0}, nil
+	}
 	return Unmarshal(data)
 }
 
-// Marshal serializes an Envelope to binary.
+// Marshal serializes a v1 Envelope to binary.
 func (e *Envelope) Marshal() ([]byte, error) {
-	size := HeaderSize + len(e.KeySlots)*KeySlotSize + NonceSize + len(e.Ciphertext)
+	size := V1HeaderSize + len(e.KeySlots)*KeySlotSize + NonceSize + len(e.Ciphertext)
 	buf := make([]byte, size)
 	offset := 0
 
@@ -255,9 +363,9 @@ func (e *Envelope) Marshal() ([]byte, error) {
 	return buf, nil
 }
 
-// Unmarshal deserializes binary data into an Envelope.
+// Unmarshal deserializes binary data into a v1 Envelope.
 func Unmarshal(data []byte) (*Envelope, error) {
-	if len(data) < HeaderSize {
+	if len(data) < V1HeaderSize {
 		return nil, ErrInvalidEnvelope
 	}
 
@@ -265,8 +373,8 @@ func Unmarshal(data []byte) (*Envelope, error) {
 	formatVersion := data[offset]
 	offset++
 
-	if formatVersion != FormatVersion {
-		return nil, fmt.Errorf("%w: got %d, expected %d", ErrUnsupportedFormat, formatVersion, FormatVersion)
+	if formatVersion != FormatV1 {
+		return nil, fmt.Errorf("%w: got %d, expected %d", ErrUnsupportedFormat, formatVersion, FormatV1)
 	}
 
 	numSlots := binary.BigEndian.Uint16(data[offset:])
@@ -278,7 +386,7 @@ func Unmarshal(data []byte) (*Envelope, error) {
 	valueVersion := binary.BigEndian.Uint64(data[offset:])
 	offset += 8
 
-	expectedMinSize := HeaderSize + int(numSlots)*KeySlotSize + NonceSize + 1
+	expectedMinSize := V1HeaderSize + int(numSlots)*KeySlotSize + NonceSize + TagSize
 	if len(data) < expectedMinSize {
 		return nil, ErrInvalidEnvelope
 	}

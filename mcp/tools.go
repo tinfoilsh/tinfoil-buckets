@@ -33,9 +33,11 @@ func kvPutTool() *mcp.Tool {
 			Properties: map[string]*jsonschema.Schema{
 				"key":             {Type: "string", Description: "The storage key"},
 				"value":           {Type: "string", Description: "Base64-encoded value to store"},
-				"encryption_keys": {Type: "array", Description: "Array of base64-encoded 32-byte AES-256 keys", Items: &jsonschema.Schema{Type: "string"}},
+				"encryption_keys": {Type: "array", Description: "Array of base64-encoded 32-byte AES-256 keys (v1)", Items: &jsonschema.Schema{Type: "string"}},
+				"encryption_key":  {Type: "string", Description: "Single base64-encoded 32-byte key (v0)"},
+				"format":          {Type: "number", Description: "Format version: 0 (direct AES-GCM) or 1 (envelope, default)"},
 			},
-			Required: []string{"key", "value", "encryption_keys"},
+			Required: []string{"key", "value"},
 		},
 	}
 }
@@ -118,7 +120,9 @@ func kvRemoveKeyTool() *mcp.Tool {
 type putArgs struct {
 	Key            string   `json:"key"`
 	Value          string   `json:"value"`
-	EncryptionKeys []string `json:"encryption_keys"`
+	EncryptionKeys []string `json:"encryption_keys,omitempty"`
+	EncryptionKey  string   `json:"encryption_key,omitempty"`
+	Format         *float64 `json:"format,omitempty"`
 }
 
 type getArgs struct {
@@ -159,41 +163,75 @@ func putHandler(r2 *store.R2Store) mcp.ToolHandler {
 			return toolError("invalid base64 value"), nil
 		}
 
-		var userKeys [][]byte
-		for _, ks := range args.EncryptionKeys {
-			decoded, err := base64.StdEncoding.DecodeString(ks)
+		format := uint8(crypto.FormatV1)
+		if args.Format != nil {
+			format = uint8(*args.Format)
+		}
+
+		var blob []byte
+
+		switch format {
+		case crypto.FormatV0:
+			if args.EncryptionKey == "" {
+				return toolError("encryption_key is required for v0 format"), nil
+			}
+			userKey, err := base64.StdEncoding.DecodeString(args.EncryptionKey)
 			if err != nil {
-				return toolError("invalid base64 encryption key"), nil
+				return toolError("invalid base64 encryption_key"), nil
 			}
-			userKeys = append(userKeys, decoded)
-		}
-
-		var version uint64 = 1
-		createdAt := time.Now()
-
-		existing, err := r2.Get(ctx, args.Key)
-		if err != nil {
-			log.Errorf("r2 get: %v", err)
-			return toolError("storage error"), nil
-		}
-		if existing != nil {
-			if meta, err := crypto.Metadata(existing); err == nil {
-				version = meta.ValueVersion + 1
-				createdAt = meta.CreatedAt
+			blob, err = crypto.SealV0(value, userKey)
+			if err != nil {
+				return toolError(err.Error()), nil
 			}
-		}
 
-		envelope, err := crypto.Seal(value, userKeys, createdAt, version)
-		if err != nil {
-			return toolError(err.Error()), nil
-		}
+			if err := r2.Put(ctx, args.Key, blob); err != nil {
+				log.Errorf("r2 put: %v", err)
+				return toolError("storage error"), nil
+			}
+			return toolText(fmt.Sprintf("stored key=%q format=v0", args.Key)), nil
 
-		if err := r2.Put(ctx, args.Key, envelope); err != nil {
-			log.Errorf("r2 put: %v", err)
-			return toolError("storage error"), nil
-		}
+		case crypto.FormatV1:
+			var userKeys [][]byte
+			for _, ks := range args.EncryptionKeys {
+				decoded, err := base64.StdEncoding.DecodeString(ks)
+				if err != nil {
+					return toolError("invalid base64 encryption key"), nil
+				}
+				userKeys = append(userKeys, decoded)
+			}
+			if len(userKeys) == 0 {
+				return toolError("encryption_keys is required for v1 format"), nil
+			}
 
-		return toolText(fmt.Sprintf("stored key=%q version=%d", args.Key, version)), nil
+			var version uint64 = 1
+			createdAt := time.Now()
+
+			existing, err := r2.Get(ctx, args.Key)
+			if err != nil {
+				log.Errorf("r2 get: %v", err)
+				return toolError("storage error"), nil
+			}
+			if existing != nil {
+				if meta, err := crypto.Metadata(existing); err == nil && meta.FormatVersion == crypto.FormatV1 {
+					version = meta.ValueVersion + 1
+					createdAt = meta.CreatedAt
+				}
+			}
+
+			blob, err = crypto.Seal(value, userKeys, createdAt, version)
+			if err != nil {
+				return toolError(err.Error()), nil
+			}
+
+			if err := r2.Put(ctx, args.Key, blob); err != nil {
+				log.Errorf("r2 put: %v", err)
+				return toolError("storage error"), nil
+			}
+			return toolText(fmt.Sprintf("stored key=%q version=%d", args.Key, version)), nil
+
+		default:
+			return toolError(fmt.Sprintf("unsupported format: %d", format)), nil
+		}
 	}
 }
 
