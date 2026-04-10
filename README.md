@@ -1,210 +1,223 @@
-# Confidential Web Search Proxy
+# Confidential KV
 
-A secure web search and URL fetch service for LLM applications, running inside a Tinfoil enclave.
+An encrypted key-value store backed by Cloudflare R2, designed to run inside a [Tinfoil](https://tinfoil.sh) confidential enclave.
 
-The service exposes three surfaces:
+Values are encrypted before they reach storage. The server never persists plaintext -- clients supply their encryption keys with each request, and all cryptographic operations happen in-memory inside the enclave.
 
-- `POST /v1/chat/completions`
-- `POST /v1/responses`
-- `POST /mcp`
+## Encryption Formats
 
-It uses a single tool-capable model loop to decide whether to answer directly or call server-side `search` and `fetch` tools. Search and fetch outputs can be filtered for safety and compacted before the model produces a final answer with citations.
+### v1 (default) -- Envelope Encryption
 
-Uses the [Tinfoil Go SDK](https://github.com/tinfoilsh/tinfoil-go) for secure, attested communication with Tinfoil enclaves.
+A random data encryption key (DEK) encrypts the value with AES-256-GCM. The DEK is then wrapped (encrypted) separately under each user-provided key, creating independent **key slots**. This enables:
 
-## Architecture
+- Multiple users/keys per value
+- Adding or removing keys without re-encrypting the value
+- Automatic version tracking and creation timestamps
 
-```text
-User Request
-  │ model: "<tool-capable-model>"
-  ▼
-┌──────────────────────────────────────────────┐
-│         Compatibility / MCP Surface          │
-│  - /v1/chat/completions                      │
-│  - /v1/responses                             │
-│  - /mcp                                      │
-└──────────────────────┬───────────────────────┘
-                       ▼
-┌──────────────────────────────────────────────┐
-│          Single Model Orchestrator           │
-│                                              │
-│  One model decides whether to:               │
-│  - answer directly                           │
-│  - call search(query)                        │
-│  - call fetch(url)                           │
-│                                              │
-│  The loop carries forward provider-side      │
-│  state with previous_response_id.            │
-└───────────────┬───────────────────────┬──────┘
-                │                       │
-                ▼                       ▼
-        ┌───────────────┐      ┌───────────────────┐
-        │ Exa Search    │      │ Cloudflare Render │
-        └──────┬────────┘      └─────────┬─────────┘
-               │                         │
-               └──────────┬──────────────┘
-                          ▼
-        ┌──────────────────────────────────────┐
-        │ Optional safeguard checks            │
-        │ - PII filtering for search queries   │
-        │ - Prompt injection filtering for     │
-        │   search results and fetched pages   │
-        └──────────────────┬───────────────────┘
-                           ▼
-        ┌──────────────────────────────────────┐
-        │ Optional tool-output compaction      │
-        │ - Large search/fetch outputs are     │
-        │   summarized by TOOL_SUMMARY_MODEL   │
-        │ - Source markers like 【1】 are       │
-        │   preserved for citation fidelity    │
-        └──────────────────┬───────────────────┘
-                           ▼
-        ┌──────────────────────────────────────┐
-        │ Final model answer + annotations     │
-        └──────────────────────────────────────┘
+### v0 -- Direct Encryption
+
+The user key encrypts the value directly with AES-256-GCM. Simpler, but does not support multiple keys or key rotation.
+
+## API
+
+### Store a value
+
+```
+PUT /kv/{key}
 ```
 
-## Quick Start
+If `{key}` is omitted, a UUID is generated.
 
 ```bash
-export TINFOIL_API_KEY="your-tinfoil-api-key"
-export EXA_API_KEY="your-exa-api-key"
-export CLOUDFLARE_ACCOUNT_ID="your-cloudflare-account-id"
-export CLOUDFLARE_API_TOKEN="your-cloudflare-api-token"
+# Generate a 256-bit key
+KEY=$(openssl rand -base64 32)
 
-# optional
-export TOOL_SUMMARY_MODEL="llama3-3-70b"
-
-# run the proxy
-go run .
-
-# with verbose logging
-go run . -v
+# Store a value (v1, default)
+curl -X PUT http://localhost:8089/kv/my-key \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"value\": \"$(echo -n 'hello world' | base64)\",
+    \"encryption_keys\": [\"$KEY\"]
+  }"
 ```
 
-## Environment Variables
+**Request body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `value` | string | Base64-encoded plaintext |
+| `encryption_keys` | string[] | Base64-encoded 32-byte keys (v1) |
+| `encryption_key` | string | Single base64-encoded 32-byte key (v0) |
+| `format` | int | `0` or `1` (default: `1`) |
+
+**Response:**
+
+```json
+{
+  "key": "my-key",
+  "version": 1,
+  "created_at": "2026-04-10T12:00:00.000Z"
+}
+```
+
+### Retrieve a value
+
+```
+GET /kv/{key}
+```
+
+```bash
+curl http://localhost:8089/kv/my-key \
+  -H "X-Encryption-Key: $KEY"
+```
+
+**Response:**
+
+```json
+{
+  "value": "aGVsbG8gd29ybGQ=",
+  "version": 1,
+  "created_at": "2026-04-10T12:00:00.000Z",
+  "format": 1
+}
+```
+
+### Inspect metadata
+
+```
+HEAD /kv/{key}
+```
+
+Returns headers without decrypting the value:
+
+| Header | Description |
+|--------|-------------|
+| `X-Format` | `0` or `1` |
+| `X-Version` | Value version (v1 only) |
+| `X-Created-At` | Creation timestamp (v1 only) |
+| `X-Num-Keys` | Number of key slots (v1 only) |
+| `X-Key-Fingerprints` | Comma-separated SHA-256 key IDs (v1 only) |
+
+### Delete a value
+
+```
+DELETE /kv/{key}
+```
+
+Returns `204 No Content`.
+
+### Add an encryption key
+
+```
+POST /kv/{key}/keys
+```
+
+Adds a new key slot to a v1 envelope without re-encrypting the value. Requires an existing authorized key to unwrap the DEK.
+
+```json
+{
+  "existing_key": "<base64 key that can currently decrypt>",
+  "new_key": "<base64 key to add>"
+}
+```
+
+### Remove an encryption key
+
+```
+DELETE /kv/{key}/keys
+```
+
+Removes a key slot from a v1 envelope. Cannot remove the last key.
+
+```json
+{
+  "existing_key": "<base64 key that can currently decrypt>",
+  "remove_key": "<base64 key to remove>"
+}
+```
+
+### Health check
+
+```
+GET /health
+```
+
+Returns `{"status":"ok"}`.
+
+## MCP
+
+The server exposes an [MCP](https://modelcontextprotocol.io) endpoint at `POST /mcp` with the following tools:
+
+| Tool | Description |
+|------|-------------|
+| `kv_put` | Store a value encrypted with one or more keys |
+| `kv_get` | Retrieve and decrypt a value |
+| `kv_delete` | Delete a key |
+| `kv_list` | List keys matching a prefix |
+| `kv_add_key` | Add an encryption key slot to an existing value |
+| `kv_remove_key` | Remove an encryption key slot |
+
+## Binary Envelope Format
+
+### v0
+
+```
+[0x00] [IV: 12B] [AES-GCM ciphertext + tag]
+```
+
+### v1
+
+```
+[0x01] [num_slots: 2B] [created_at_ms: 8B] [version: 8B]
+[key_id: 32B | encrypted_dek: 60B] x num_slots
+[IV: 12B] [AES-GCM ciphertext + tag]
+```
+
+Each key slot is 92 bytes: a SHA-256 fingerprint of the user key (32B) followed by the DEK encrypted with that user key (IV 12B + ciphertext 32B + GCM tag 16B).
+
+## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TINFOIL_API_KEY` | - | Tinfoil API key for enclave model access |
-| `EXA_API_KEY` | - | Exa search API key |
-| `CLOUDFLARE_ACCOUNT_ID` | - | Cloudflare account ID for Browser Rendering |
-| `CLOUDFLARE_API_TOKEN` | - | Cloudflare API token for Browser Rendering |
-| `SAFEGUARD_MODEL` | `gpt-oss-safeguard-120b` | Model used for safety filtering |
-| `TOOL_SUMMARY_MODEL` | `llama3-3-70b` | Model used to compact oversized search/fetch outputs |
-| `ENABLE_PII_CHECK` | `true` | Default for PII filtering on outgoing search queries |
-| `ENABLE_INJECTION_CHECK` | `false` | Default for prompt injection filtering on search/fetch output |
-| `LISTEN_ADDR` | `:8089` | Address to listen on |
+| `CLOUDFLARE_ACCOUNT_ID` | required | Cloudflare account ID |
+| `CLOUDFLARE_API_TOKEN` | required | Cloudflare API token |
+| `R2_BUCKET_NAME` | `kv-store` | R2 bucket name |
+| `LISTEN_ADDR` | `:8089` | HTTP listen address |
 
-## Request Flow
-
-Each request follows a single-model server-side tool loop:
-
-1. Validate the request and normalize web search options
-2. Ask the model to answer directly or call `search` / `fetch`
-3. Execute tool calls server-side
-4. Apply optional PII and prompt-injection safeguards
-5. Compact oversized tool output when needed while preserving source markers
-6. Continue the loop with `previous_response_id`
-7. Return the final answer with citations, reasoning, blocked searches, and fetch status
-
-## API Endpoints
-
-This server provides OpenAI-compatible compatibility endpoints plus MCP.
-
-### Chat Completions
-
-`POST /v1/chat/completions`
+## Running
 
 ```bash
-curl http://localhost:8089/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-oss-120b",
-    "messages": [{"role": "user", "content": "What is the latest news about SpaceX?"}],
-    "web_search_options": {"search_context_size": "medium"},
-    "stream": true
-  }'
+export CLOUDFLARE_ACCOUNT_ID="your-account-id"
+export CLOUDFLARE_API_TOKEN="your-api-token"
+
+go run .
 ```
 
-Response includes standard OpenAI fields plus custom extensions:
-
-- `choices[0].message.annotations` - URL citations
-- `choices[0].message.fetch_calls` - fetched URLs with status
-- `choices[0].message.search_reasoning` - search/fetch orchestration reasoning
-- `choices[0].message.blocked_searches` - queries blocked by safety filters
-
-`web_search_options.search_context_size` and `web_search_options.user_location` are optional.
-
-### Responses API
-
-`POST /v1/responses`
+### Docker
 
 ```bash
-curl http://localhost:8089/v1/responses \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-oss-120b",
-    "input": "What is the latest news about SpaceX?",
-    "tools": [{"type": "web_search", "search_context_size": "medium"}],
-    "stream": true
-  }'
-```
-
-Response includes structured `web_search_call` items for both searches and URL fetches, plus message content with annotations.
-
-### MCP
-
-`POST /mcp`
-
-The MCP surface exposes `search` and `fetch` tools directly.
-
-### Health Check
-
-`GET /health` returns `{"status":"ok"}`.
-
-## Safety Features
-
-### PII Detection
-
-Blocks outgoing search queries that would leak sensitive personally identifiable information.
-
-### Prompt Injection Detection
-
-Filters search results and fetched pages that contain prompt injection attempts before they are passed back into the answering loop.
-
-### Fetch Target Validation
-
-Rejects unsafe fetch targets before they reach Cloudflare Browser Rendering, including localhost, internal hostnames, private IP ranges, and unsupported URL schemes.
-
-## Docker
-
-```bash
-docker build -t websearch-proxy .
+docker build -t confidential-kv .
 docker run -p 8089:8089 \
-  -e TINFOIL_API_KEY=$TINFOIL_API_KEY \
-  -e EXA_API_KEY=$EXA_API_KEY \
   -e CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID \
   -e CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN \
-  websearch-proxy
+  confidential-kv
 ```
 
 ## Security
 
-This proxy uses the Tinfoil Go SDK which provides:
-
-- Automatic attestation validation to ensure enclave integrity
-- TLS certificate pinning with attested certificates
-- Direct-to-enclave encrypted communication
-- Service-held credentials for model, search, and fetch providers inside the enclave
-
-All processing occurs within secure enclaves, so search queries, results, and responses remain encrypted outside the trusted execution environment.
+- Designed for [Tinfoil](https://tinfoil.sh) confidential enclaves -- all processing occurs within a trusted execution environment
+- The server never stores plaintext values or encryption keys
+- Clients supply keys per-request; keys exist in-memory only during the operation
+- All cryptography uses Go's standard library (`crypto/aes`, `crypto/cipher`, `crypto/rand`)
+- AES-256-GCM provides authenticated encryption with 128-bit authentication tags
 
 ## Reporting Vulnerabilities
 
 Please report security vulnerabilities by either:
 
 - Emailing [security@tinfoil.sh](mailto:security@tinfoil.sh)
-- Opening an issue on GitHub on this repository
+- Opening an issue on this repository
 
-We aim to respond to legitimate security reports within 24 hours.
+## License
+
+[AGPL-3.0](LICENSE)
