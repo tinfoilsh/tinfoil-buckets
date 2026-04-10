@@ -2,12 +2,15 @@ package handler
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/tinfoilsh/confidential-kv/crypto"
@@ -31,8 +34,9 @@ type PutRequest struct {
 }
 
 type PutResponse struct {
-	Version   uint64 `json:"version"`
-	CreatedAt string `json:"created_at"`
+	Key       string `json:"key"`
+	Version   uint64 `json:"version,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 // POST /kv/{key}/keys
@@ -69,7 +73,7 @@ type ErrorResponse struct {
 func (h *KVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Route: /kv/{key} or /kv/{key}/keys
 	path := r.URL.Path
-	if len(path) < 5 || path[:4] != "/kv/" {
+	if !strings.HasPrefix(path, "/kv/") {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
@@ -95,19 +99,30 @@ func (h *KVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := rest
-	if key == "" {
-		writeError(w, http.StatusBadRequest, "key is required")
-		return
-	}
 
 	switch r.Method {
 	case http.MethodPut:
+		if key == "" {
+			key = uuid.New().String()
+		}
 		h.handlePut(w, r, key)
 	case http.MethodGet:
+		if key == "" {
+			writeError(w, http.StatusBadRequest, "key is required")
+			return
+		}
 		h.handleGet(w, r, key)
 	case http.MethodHead:
+		if key == "" {
+			writeError(w, http.StatusBadRequest, "key is required")
+			return
+		}
 		h.handleHead(w, r, key)
 	case http.MethodDelete:
+		if key == "" {
+			writeError(w, http.StatusBadRequest, "key is required")
+			return
+		}
 		h.handleDelete(w, r, key)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -190,6 +205,7 @@ func (h *KVHandler) handlePut(w http.ResponseWriter, r *http.Request, key string
 		}
 
 		writeJSON(w, http.StatusOK, PutResponse{
+			Key:       key,
 			Version:   version,
 			CreatedAt: createdAt.UTC().Format(time.RFC3339Nano),
 		})
@@ -206,7 +222,7 @@ func (h *KVHandler) handlePut(w http.ResponseWriter, r *http.Request, key string
 		return
 	}
 
-	writeJSON(w, http.StatusOK, PutResponse{})
+	writeJSON(w, http.StatusOK, PutResponse{Key: key})
 }
 
 func (h *KVHandler) handleGet(w http.ResponseWriter, r *http.Request, key string) {
@@ -284,6 +300,12 @@ func (h *KVHandler) handleHead(w http.ResponseWriter, r *http.Request, key strin
 		w.Header().Set("X-Version", strconv.FormatUint(meta.ValueVersion, 10))
 		w.Header().Set("X-Created-At", meta.CreatedAt.UTC().Format(time.RFC3339Nano))
 		w.Header().Set("X-Num-Keys", strconv.Itoa(len(meta.KeySlots)))
+
+		fingerprints := make([]string, len(meta.KeySlots))
+		for i, slot := range meta.KeySlots {
+			fingerprints[i] = hex.EncodeToString(slot.KeyID[:])
+		}
+		w.Header().Set("X-Key-Fingerprints", strings.Join(fingerprints, ","))
 	}
 	w.WriteHeader(http.StatusOK)
 }

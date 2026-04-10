@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -414,5 +415,107 @@ func TestV0HeadFormat(t *testing.T) {
 	}
 	if rec.Header().Get("X-Version") != "" {
 		t.Fatalf("X-Version should be empty for v0, got %q", rec.Header().Get("X-Version"))
+	}
+}
+
+func TestPutAutoGeneratesUUID(t *testing.T) {
+	h := setupHandler()
+	key := randomKeyB64(t)
+	value := base64.StdEncoding.EncodeToString([]byte("auto-key"))
+
+	body, _ := json.Marshal(PutRequest{
+		Value:          value,
+		EncryptionKeys: []string{key},
+	})
+	// PUT to /kv/ with no key
+	req := httptest.NewRequest(http.MethodPut, "/kv/", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT: got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var putResp PutResponse
+	json.NewDecoder(rec.Body).Decode(&putResp)
+	if putResp.Key == "" {
+		t.Fatal("expected auto-generated key, got empty")
+	}
+	if len(putResp.Key) != 36 {
+		t.Fatalf("expected UUID (36 chars), got %q (%d chars)", putResp.Key, len(putResp.Key))
+	}
+
+	// GET with the returned key
+	req = httptest.NewRequest(http.MethodGet, "/kv/"+putResp.Key, nil)
+	req.Header.Set("X-Encryption-Key", key)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET: got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var getResp GetResponse
+	json.NewDecoder(rec.Body).Decode(&getResp)
+	if getResp.Value != value {
+		t.Fatalf("value: got %q, want %q", getResp.Value, value)
+	}
+}
+
+func TestPutReturnsKeyInResponse(t *testing.T) {
+	h := setupHandler()
+	key := randomKeyB64(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	body, _ := json.Marshal(PutRequest{
+		Value:          value,
+		EncryptionKeys: []string{key},
+	})
+	req := httptest.NewRequest(http.MethodPut, "/kv/my-explicit-key", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var putResp PutResponse
+	json.NewDecoder(rec.Body).Decode(&putResp)
+	if putResp.Key != "my-explicit-key" {
+		t.Fatalf("key: got %q, want %q", putResp.Key, "my-explicit-key")
+	}
+}
+
+func TestHeadReturnsFingerprints(t *testing.T) {
+	h := setupHandler()
+	key1 := randomKeyB64(t)
+	key2 := randomKeyB64(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	body, _ := json.Marshal(PutRequest{
+		Value:          value,
+		EncryptionKeys: []string{key1, key2},
+	})
+	req := httptest.NewRequest(http.MethodPut, "/kv/fp-test", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	req = httptest.NewRequest(http.MethodHead, "/kv/fp-test", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HEAD: got %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	fps := rec.Header().Get("X-Key-Fingerprints")
+	if fps == "" {
+		t.Fatal("expected X-Key-Fingerprints header")
+	}
+	parts := strings.Split(fps, ",")
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 fingerprints, got %d: %q", len(parts), fps)
+	}
+	// Each fingerprint is hex-encoded SHA-256 = 64 chars
+	for i, fp := range parts {
+		if len(fp) != 64 {
+			t.Fatalf("fingerprint %d: expected 64 hex chars, got %d: %q", i, len(fp), fp)
+		}
 	}
 }
