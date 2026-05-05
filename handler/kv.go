@@ -58,11 +58,6 @@ type GetResponse struct {
 	Format    uint8  `json:"format"`
 }
 
-// GET /kv/?prefix=&max_keys= response
-type ListResponse struct {
-	LookupKeys []string `json:"lookup_keys"`
-}
-
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
@@ -107,11 +102,6 @@ func (h *KVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lookupKey := rest
-
-	if r.Method == http.MethodGet && lookupKey == "" {
-		h.handleList(w, r)
-		return
-	}
 
 	if err := validateLookupKey(lookupKey); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -311,31 +301,6 @@ func (h *KVHandler) handleDelete(w http.ResponseWriter, r *http.Request, lookupK
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *KVHandler) handleList(w http.ResponseWriter, r *http.Request) {
-	prefix := r.URL.Query().Get("prefix")
-
-	maxKeys := int32(100)
-	if v := r.URL.Query().Get("max_keys"); v != "" {
-		n, err := strconv.ParseInt(v, 10, 32)
-		if err != nil || n <= 0 {
-			writeError(w, http.StatusBadRequest, "max_keys must be a positive integer")
-			return
-		}
-		maxKeys = int32(n)
-	}
-
-	keys, err := h.store.ListKeys(r.Context(), prefix, maxKeys)
-	if err != nil {
-		log.Errorf("failed to list: %v", err)
-		writeError(w, http.StatusInternalServerError, "storage error")
-		return
-	}
-	if keys == nil {
-		keys = []string{}
-	}
-	writeJSON(w, http.StatusOK, ListResponse{LookupKeys: keys})
 }
 
 func (h *KVHandler) handleAddKey(w http.ResponseWriter, r *http.Request, lookupKey string) {

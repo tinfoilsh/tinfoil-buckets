@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
@@ -54,20 +53,6 @@ func (m *mockS3) HeadObject(_ context.Context, input *s3.HeadObjectInput, _ ...f
 		return nil, &types.NoSuchKey{}
 	}
 	return &s3.HeadObjectOutput{}, nil
-}
-
-func (m *mockS3) ListObjectsV2(_ context.Context, input *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
-	var contents []types.Object
-	for k := range m.objects {
-		if input.Prefix == nil || (len(k) >= len(*input.Prefix) && k[:len(*input.Prefix)] == *input.Prefix) {
-			key := k
-			contents = append(contents, types.Object{Key: &key})
-		}
-	}
-	return &s3.ListObjectsV2Output{
-		Contents:    contents,
-		IsTruncated: aws.Bool(false),
-	}, nil
 }
 
 func randomKeyB64(t *testing.T) string {
@@ -493,49 +478,6 @@ func TestPutReturnsKeyInResponse(t *testing.T) {
 	json.NewDecoder(rec.Body).Decode(&putResp)
 	if putResp.LookupKey != lk {
 		t.Fatalf("lookup_key: got %q, want %q", putResp.LookupKey, lk)
-	}
-}
-
-func TestList(t *testing.T) {
-	h := setupHandler()
-	key := randomKeyB64(t)
-	value := base64.StdEncoding.EncodeToString([]byte("data"))
-
-	// Shared 36-char prefix, then a per-record suffix. The full keys remain
-	// well above the min-length threshold; "alp..." vs "bet..." differentiates them.
-	prefix := randomLookupKey(t)
-	suffixes := []string{"alpha", "alpine", "beta"}
-	for _, s := range suffixes {
-		body, _ := json.Marshal(PutRequest{
-			Value:          value,
-			EncryptionKeys: []string{key},
-		})
-		req := httptest.NewRequest(http.MethodPut, "/kv/"+prefix+s, bytes.NewReader(body))
-		h.ServeHTTP(httptest.NewRecorder(), req)
-	}
-
-	// List all
-	req := httptest.NewRequest(http.MethodGet, "/kv/", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("LIST: got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	var resp ListResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
-	if len(resp.LookupKeys) != 3 {
-		t.Fatalf("expected 3 keys, got %d: %v", len(resp.LookupKeys), resp.LookupKeys)
-	}
-
-	// List with prefix that matches alpha+alpine but not beta
-	req = httptest.NewRequest(http.MethodGet, "/kv/?prefix="+prefix+"alp", nil)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	json.NewDecoder(rec.Body).Decode(&resp)
-	if len(resp.LookupKeys) != 2 {
-		t.Fatalf("expected 2 keys with prefix=alp, got %d: %v", len(resp.LookupKeys), resp.LookupKeys)
 	}
 }
 

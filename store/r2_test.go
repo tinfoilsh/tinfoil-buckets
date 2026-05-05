@@ -6,7 +6,6 @@ import (
 	"io"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
@@ -45,20 +44,6 @@ func (m *mockS3) HeadObject(_ context.Context, input *s3.HeadObjectInput, _ ...f
 		return nil, &types.NoSuchKey{}
 	}
 	return &s3.HeadObjectOutput{}, nil
-}
-
-func (m *mockS3) ListObjectsV2(_ context.Context, input *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
-	var contents []types.Object
-	for k := range m.objects {
-		if input.Prefix == nil || len(*input.Prefix) == 0 || len(k) >= len(*input.Prefix) && k[:len(*input.Prefix)] == *input.Prefix {
-			key := k
-			contents = append(contents, types.Object{Key: &key})
-		}
-	}
-	return &s3.ListObjectsV2Output{
-		Contents:    contents,
-		IsTruncated: aws.Bool(false),
-	}, nil
 }
 
 func TestPutGetDelete(t *testing.T) {
@@ -124,19 +109,3 @@ func TestExists(t *testing.T) {
 	}
 }
 
-func TestListKeys(t *testing.T) {
-	s := NewR2StoreWithClient(newMockS3(), "test-bucket")
-	ctx := context.Background()
-
-	s.Put(ctx, "prefix/a", []byte("1"))
-	s.Put(ctx, "prefix/b", []byte("2"))
-	s.Put(ctx, "other/c", []byte("3"))
-
-	keys, err := s.ListKeys(ctx, "prefix/", 100)
-	if err != nil {
-		t.Fatalf("ListKeys: %v", err)
-	}
-	if len(keys) != 2 {
-		t.Fatalf("got %d keys, want 2", len(keys))
-	}
-}

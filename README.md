@@ -108,24 +108,6 @@ DELETE /kv/{lookup_key}
 
 Returns `204 No Content`.
 
-### List lookup keys
-
-```
-GET /kv/?prefix={prefix}&max_keys={n}
-```
-
-Both query params are optional. `max_keys` defaults to `100`.
-
-```bash
-curl 'http://localhost:8089/kv/?prefix=user-'
-```
-
-**Response:**
-
-```json
-{ "lookup_keys": ["user-alice", "user-bob"] }
-```
-
 ### Add an encryption key
 
 ```

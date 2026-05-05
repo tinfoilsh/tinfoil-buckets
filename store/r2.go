@@ -20,7 +20,6 @@ type S3API interface {
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
-	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
 }
 
 // R2Store wraps an S3-compatible client for Cloudflare R2.
@@ -104,38 +103,6 @@ func (s *R2Store) Exists(ctx context.Context, lookupKey string) (bool, error) {
 		return false, fmt.Errorf("r2 head %q: %w", lookupKey, err)
 	}
 	return true, nil
-}
-
-// ListKeys returns lookup keys matching the given prefix.
-func (s *R2Store) ListKeys(ctx context.Context, prefix string, maxKeys int32) ([]string, error) {
-	input := &s3.ListObjectsV2Input{
-		Bucket:  &s.bucket,
-		MaxKeys: &maxKeys,
-	}
-	if prefix != "" {
-		input.Prefix = &prefix
-	}
-
-	var lookupKeys []string
-	for {
-		resp, err := s.client.ListObjectsV2(ctx, input)
-		if err != nil {
-			return nil, fmt.Errorf("r2 list prefix=%q: %w", prefix, err)
-		}
-
-		for _, obj := range resp.Contents {
-			if obj.Key != nil {
-				lookupKeys = append(lookupKeys, *obj.Key)
-			}
-		}
-
-		if resp.IsTruncated == nil || !*resp.IsTruncated {
-			break
-		}
-		input.ContinuationToken = resp.NextContinuationToken
-	}
-
-	return lookupKeys, nil
 }
 
 func isNotFound(err error) bool {
