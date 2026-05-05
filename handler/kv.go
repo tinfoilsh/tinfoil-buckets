@@ -68,8 +68,7 @@ type ErrorResponse struct {
 }
 
 const (
-	encryptionKeysSuffix = "/encryption-keys"
-	minLookupKeyLength   = 36
+	minLookupKeyLength = 36
 )
 
 func validateLookupKey(lookupKey string) error {
@@ -91,7 +90,7 @@ func (h *KVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	rest := path[len("/kv/"):]
 
-	if lookupKey, ok := strings.CutSuffix(rest, encryptionKeysSuffix); ok {
+	if lookupKey, ok := strings.CutSuffix(rest, "/encryption-keys"); ok {
 		if err := validateLookupKey(lookupKey); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
