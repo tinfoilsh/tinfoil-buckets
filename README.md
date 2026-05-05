@@ -4,7 +4,7 @@ An encrypted key value store powered by Cloudflare R2 buckets, designed to run i
 
 Values are encrypted before they reach storage. Clients supply encryption keys with each request, all cryptographic operations happen in-memory inside the enclave, and then the ciphertext is stored in R2 buckets.
 
-Clients are responsible for remembering their lookup keys.
+Clients are responsible for remembering their lookup keys & not sharing these. They are meant to be cryptographically unguessable.
 
 ## Encryption Formats
 
