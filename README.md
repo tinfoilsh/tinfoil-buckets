@@ -35,7 +35,7 @@ PUT /kv/{lookup_key}
 KEY=$(openssl rand -base64 32)
 
 # Store a value (v1, default)
-curl -X PUT http://localhost:8089/kv/my-lookup-key \
+curl -X PUT http://localhost:8089/kv/uuid \
   -H "Content-Type: application/json" \
   -d "{
     \"value\": \"$(echo -n 'hello world' | base64)\",
@@ -56,7 +56,7 @@ curl -X PUT http://localhost:8089/kv/my-lookup-key \
 
 ```json
 {
-  "lookup_key": "my-lookup-key",
+  "lookup_key": "uuid",
   "version": 1,
   "created_at": "2026-04-10T12:00:00.000Z"
 }
@@ -69,7 +69,7 @@ GET /kv/{lookup_key}
 ```
 
 ```bash
-curl http://localhost:8089/kv/my-lookup-key \
+curl http://localhost:8089/kv/uuid \
   -H "X-Encryption-Key: $KEY"
 ```
 
