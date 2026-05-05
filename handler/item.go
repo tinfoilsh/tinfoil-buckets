@@ -16,15 +16,15 @@ import (
 	"github.com/tinfoilsh/tinfoil-buckets/store"
 )
 
-type BucketHandler struct {
+type ItemHandler struct {
 	store *store.R2Store
 }
 
-func NewBucketHandler(store *store.R2Store) *BucketHandler {
-	return &BucketHandler{store: store}
+func NewItemHandler(store *store.R2Store) *ItemHandler {
+	return &ItemHandler{store: store}
 }
 
-// PUT /buckets/{lookup_key}
+// PUT /items/{lookup_key}
 type PutRequest struct {
 	Value          string   `json:"value"`                     // base64-encoded
 	EncryptionKeys []string `json:"encryption_keys,omitempty"` // base64-encoded 32-byte keys (required for v1)
@@ -38,19 +38,19 @@ type PutResponse struct {
 	CreatedAt string `json:"created_at,omitempty"`
 }
 
-// POST /buckets/{lookup_key}/encryption-keys
+// POST /items/{lookup_key}/encryption-keys
 type AddKeyRequest struct {
 	ExistingEncryptionKey string `json:"existing_encryption_key"` // base64
 	NewEncryptionKey      string `json:"new_encryption_key"`      // base64
 }
 
-// DELETE /buckets/{lookup_key}/encryption-keys
+// DELETE /items/{lookup_key}/encryption-keys
 type RemoveKeyRequest struct {
 	ExistingEncryptionKey string `json:"existing_encryption_key"` // base64
 	RemoveEncryptionKey   string `json:"remove_encryption_key"`   // base64
 }
 
-// GET /buckets/{lookup_key} response
+// GET /items/{lookup_key} response
 type GetResponse struct {
 	Value     string `json:"value"`                // base64-encoded
 	Version   uint64 `json:"version,omitempty"`    // v1 only
@@ -64,7 +64,7 @@ type ErrorResponse struct {
 
 const (
 	minLookupKeyLength = 36
-	routePrefix        = "/buckets/"
+	routePrefix        = "/items/"
 )
 
 func validateLookupKey(lookupKey string) error {
@@ -77,7 +77,7 @@ func validateLookupKey(lookupKey string) error {
 	return nil
 }
 
-func (h *BucketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *ItemHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	if !strings.HasPrefix(path, routePrefix) {
 		writeError(w, http.StatusNotFound, "not found")
@@ -123,7 +123,7 @@ func (h *BucketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *BucketHandler) handlePut(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	var req PutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -210,7 +210,7 @@ func (h *BucketHandler) handlePut(w http.ResponseWriter, r *http.Request, lookup
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *BucketHandler) handleGet(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	encKeyB64 := r.Header.Get("X-Encryption-Key")
 	if encKeyB64 == "" {
 		writeError(w, http.StatusBadRequest, "X-Encryption-Key header is required")
@@ -262,7 +262,7 @@ func (h *BucketHandler) handleGet(w http.ResponseWriter, r *http.Request, lookup
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *BucketHandler) handleHead(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	data, err := h.store.Get(r.Context(), lookupKey)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
@@ -295,7 +295,7 @@ func (h *BucketHandler) handleHead(w http.ResponseWriter, r *http.Request, looku
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *BucketHandler) handleDelete(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *ItemHandler) handleDelete(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	if err := h.store.Delete(r.Context(), lookupKey); err != nil {
 		log.Errorf("failed to delete: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
@@ -304,7 +304,7 @@ func (h *BucketHandler) handleDelete(w http.ResponseWriter, r *http.Request, loo
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *BucketHandler) handleAddKey(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	var req AddKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -359,7 +359,7 @@ func (h *BucketHandler) handleAddKey(w http.ResponseWriter, r *http.Request, loo
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *BucketHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	var req RemoveKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")

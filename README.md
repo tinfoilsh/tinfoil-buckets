@@ -25,7 +25,7 @@ The user key encrypts the value directly with AES-256-GCM. Simpler, does not sup
 ### Store a value
 
 ```
-PUT /buckets/{lookup_key}
+PUT /items/{lookup_key}
 ```
 
 `{lookup_key}` is required and must be at least 36 characters (UUID-length, to ensure adequate entropy).
@@ -35,7 +35,7 @@ PUT /buckets/{lookup_key}
 KEY=$(openssl rand -base64 32)
 
 # Store a value (v1, default)
-curl -X PUT http://localhost:8089/buckets/uuid \
+curl -X PUT http://localhost:8089/items/uuid \
   -H "Content-Type: application/json" \
   -d "{
     \"value\": \"$(echo -n 'hello world' | base64)\",
@@ -65,11 +65,11 @@ curl -X PUT http://localhost:8089/buckets/uuid \
 ### Retrieve a value
 
 ```
-GET /buckets/{lookup_key}
+GET /items/{lookup_key}
 ```
 
 ```bash
-curl http://localhost:8089/buckets/uuid \
+curl http://localhost:8089/items/uuid \
   -H "X-Encryption-Key: $KEY"
 ```
 
@@ -87,7 +87,7 @@ curl http://localhost:8089/buckets/uuid \
 ### Inspect metadata
 
 ```
-HEAD /buckets/{lookup_key}
+HEAD /items/{lookup_key}
 ```
 
 Returns headers without decrypting the value:
@@ -103,7 +103,7 @@ Returns headers without decrypting the value:
 ### Delete a value
 
 ```
-DELETE /buckets/{lookup_key}
+DELETE /items/{lookup_key}
 ```
 
 Returns `204 No Content`.
@@ -111,7 +111,7 @@ Returns `204 No Content`.
 ### Add an encryption key
 
 ```
-POST /buckets/{lookup_key}/encryption-keys
+POST /items/{lookup_key}/encryption-keys
 ```
 
 Adds a new key slot to a v1 envelope without re-encrypting the value. Requires an existing authorized encryption key to unwrap the DEK.
@@ -126,7 +126,7 @@ Adds a new key slot to a v1 envelope without re-encrypting the value. Requires a
 ### Remove an encryption key
 
 ```
-DELETE /buckets/{lookup_key}/encryption-keys
+DELETE /items/{lookup_key}/encryption-keys
 ```
 
 Removes a key slot from a v1 envelope. Cannot remove the last encryption key.

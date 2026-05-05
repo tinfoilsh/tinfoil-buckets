@@ -24,10 +24,10 @@ func main() {
 
 	r2 := store.NewR2Store(cfg.CloudflareAccountID, cfg.R2AccessKeyID, cfg.R2SecretAccessKey, cfg.R2BucketName)
 
-	bucketHandler := handler.NewBucketHandler(r2)
+	itemHandler := handler.NewItemHandler(r2)
 
 	mux := http.NewServeMux()
-	mux.Handle("/buckets/", bucketHandler)
+	mux.Handle("/items/", itemHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
