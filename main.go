@@ -8,16 +8,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/tinfoilsh/confidential-kv/config"
 	"github.com/tinfoilsh/confidential-kv/handler"
-	mcptools "github.com/tinfoilsh/confidential-kv/mcp"
 	"github.com/tinfoilsh/confidential-kv/store"
 )
-
-var version = "dev"
 
 func main() {
 	cfg := config.Load()
@@ -30,19 +26,8 @@ func main() {
 
 	kvHandler := handler.NewKVHandler(r2)
 
-	mcpServer := mcp.NewServer(&mcp.Implementation{
-		Name:    "confidential-kv",
-		Version: version,
-	}, nil)
-	mcptools.RegisterTools(mcpServer, r2)
-
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		return mcpServer
-	}, nil)
-
 	mux := http.NewServeMux()
 	mux.Handle("/kv/", kvHandler)
-	mux.Handle("/mcp", mcpHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))

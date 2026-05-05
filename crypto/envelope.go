@@ -20,10 +20,10 @@ const (
 	NonceSize = 12 // AES-GCM standard nonce
 	TagSize   = 16 // AES-GCM authentication tag
 
-	KeyIDSize       = 32                           // SHA-256 of user key
+	KeyIDSize       = 32                            // SHA-256 of user key
 	EncryptedDEKLen = NonceSize + KeySize + TagSize // IV + encrypted DEK + tag
 	KeySlotSize     = KeyIDSize + EncryptedDEKLen   // 32 + 60 = 92 bytes
-	V1HeaderSize    = 1 + 2 + 8 + 8                // format(1) + numSlots(2) + createdAt(8) + version(8) = 19 bytes
+	V1HeaderSize    = 1 + 2 + 8 + 8                 // format(1) + numSlots(2) + createdAt(8) + version(8) = 19 bytes
 	V0HeaderSize    = 1                             // format(1) only
 	V0MinSize       = V0HeaderSize + NonceSize + TagSize
 )

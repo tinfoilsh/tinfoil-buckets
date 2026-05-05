@@ -20,7 +20,6 @@ type S3API interface {
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
-	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
 }
 
 // R2Store wraps an S3-compatible client for Cloudflare R2.
@@ -44,98 +43,66 @@ func NewR2StoreWithClient(client S3API, bucket string) *R2Store {
 	return &R2Store{client: client, bucket: bucket}
 }
 
-// Put stores raw bytes at the given key.
-func (s *R2Store) Put(ctx context.Context, key string, data []byte) error {
+// Put stores raw bytes at the given lookup key.
+func (s *R2Store) Put(ctx context.Context, lookupKey string, data []byte) error {
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      &s.bucket,
-		Key:         &key,
+		Key:         &lookupKey,
 		Body:        bytes.NewReader(data),
 		ContentType: aws.String("application/octet-stream"),
 	})
 	if err != nil {
-		return fmt.Errorf("r2 put %q: %w", key, err)
+		return fmt.Errorf("r2 put %q: %w", lookupKey, err)
 	}
 	return nil
 }
 
-// Get retrieves raw bytes for the given key. Returns nil, nil if not found.
-func (s *R2Store) Get(ctx context.Context, key string) ([]byte, error) {
+// Get retrieves raw bytes for the given lookup key. Returns nil, nil if not found.
+func (s *R2Store) Get(ctx context.Context, lookupKey string) ([]byte, error) {
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: &s.bucket,
-		Key:    &key,
+		Key:    &lookupKey,
 	})
 	if err != nil {
 		if isNotFound(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("r2 get %q: %w", key, err)
+		return nil, fmt.Errorf("r2 get %q: %w", lookupKey, err)
 	}
 	defer resp.Body.Close()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("r2 read %q: %w", key, err)
+		return nil, fmt.Errorf("r2 read %q: %w", lookupKey, err)
 	}
 	return data, nil
 }
 
-// Delete removes the object at the given key.
-func (s *R2Store) Delete(ctx context.Context, key string) error {
+// Delete removes the object at the given lookup key.
+func (s *R2Store) Delete(ctx context.Context, lookupKey string) error {
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: &s.bucket,
-		Key:    &key,
+		Key:    &lookupKey,
 	})
 	if err != nil {
-		return fmt.Errorf("r2 delete %q: %w", key, err)
+		return fmt.Errorf("r2 delete %q: %w", lookupKey, err)
 	}
 	return nil
 }
 
-// Exists checks whether an object exists at the given key.
-func (s *R2Store) Exists(ctx context.Context, key string) (bool, error) {
+// Exists checks whether an object exists at the given lookup key.
+func (s *R2Store) Exists(ctx context.Context, lookupKey string) (bool, error) {
 	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: &s.bucket,
-		Key:    &key,
+		Key:    &lookupKey,
 	})
 	if err != nil {
 		if isNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("r2 head %q: %w", key, err)
+		return false, fmt.Errorf("r2 head %q: %w", lookupKey, err)
 	}
 	return true, nil
-}
-
-// ListKeys returns keys matching the given prefix.
-func (s *R2Store) ListKeys(ctx context.Context, prefix string, maxKeys int32) ([]string, error) {
-	input := &s3.ListObjectsV2Input{
-		Bucket:  &s.bucket,
-		MaxKeys: &maxKeys,
-	}
-	if prefix != "" {
-		input.Prefix = &prefix
-	}
-
-	var keys []string
-	for {
-		resp, err := s.client.ListObjectsV2(ctx, input)
-		if err != nil {
-			return nil, fmt.Errorf("r2 list prefix=%q: %w", prefix, err)
-		}
-
-		for _, obj := range resp.Contents {
-			if obj.Key != nil {
-				keys = append(keys, *obj.Key)
-			}
-		}
-
-		if resp.IsTruncated == nil || !*resp.IsTruncated {
-			break
-		}
-		input.ContinuationToken = resp.NextContinuationToken
-	}
-
-	return keys, nil
 }
 
 func isNotFound(err error) bool {
