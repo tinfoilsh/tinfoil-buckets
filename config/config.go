@@ -4,7 +4,8 @@ import "os"
 
 type Config struct {
 	CloudflareAccountID string
-	CloudflareAPIToken  string
+	R2AccessKeyID       string
+	R2SecretAccessKey   string
 	R2BucketName        string
 	ListenAddr          string
 }
@@ -12,8 +13,9 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		CloudflareAccountID: os.Getenv("CLOUDFLARE_ACCOUNT_ID"),
-		CloudflareAPIToken:  os.Getenv("CLOUDFLARE_API_TOKEN"),
-		R2BucketName:        getEnv("R2_BUCKET_NAME", "kv-store"),
+		R2AccessKeyID:       os.Getenv("R2_TINFOIL_BUCKET_ACCESS_KEY_ID"),
+		R2SecretAccessKey:   os.Getenv("R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY"),
+		R2BucketName:        getEnv("R2_BUCKET_NAME", "tinfoil-bucket"),
 		ListenAddr:          getEnv("LISTEN_ADDR", ":8089"),
 	}
 }

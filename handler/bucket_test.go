@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
-	"github.com/tinfoilsh/confidential-kv/store"
+	"github.com/tinfoilsh/tinfoil-buckets/store"
 )
 
 type mockS3 struct {
@@ -71,9 +71,9 @@ func randomLookupKey(t *testing.T) string {
 	return hex.EncodeToString(b)
 }
 
-func setupHandler() *KVHandler {
+func setupHandler() *BucketHandler {
 	s := store.NewR2StoreWithClient(newMockS3(), "test")
-	return NewKVHandler(s)
+	return NewBucketHandler(s)
 }
 
 func TestPutAndGet(t *testing.T) {
@@ -87,7 +87,7 @@ func TestPutAndGet(t *testing.T) {
 		Value:          value,
 		EncryptionKeys: []string{key},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/kv/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/"+lk, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -102,7 +102,7 @@ func TestPutAndGet(t *testing.T) {
 	}
 
 	// GET
-	req = httptest.NewRequest(http.MethodGet, "/kv/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/buckets/"+lk, nil)
 	req.Header.Set("X-Encryption-Key", key)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -122,7 +122,7 @@ func TestGetNotFound(t *testing.T) {
 	h := setupHandler()
 	key := randomKeyB64(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/kv/"+randomLookupKey(t), nil)
+	req := httptest.NewRequest(http.MethodGet, "/buckets/"+randomLookupKey(t), nil)
 	req.Header.Set("X-Encryption-Key", key)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -143,11 +143,11 @@ func TestGetWrongKey(t *testing.T) {
 		Value:          value,
 		EncryptionKeys: []string{key},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/kv/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/"+lk, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	req = httptest.NewRequest(http.MethodGet, "/kv/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/buckets/"+lk, nil)
 	req.Header.Set("X-Encryption-Key", wrongKey)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -168,7 +168,7 @@ func TestVersionIncrement(t *testing.T) {
 			Value:          value,
 			EncryptionKeys: []string{key},
 		})
-		req := httptest.NewRequest(http.MethodPut, "/kv/"+lk, bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPut, "/buckets/"+lk, bytes.NewReader(body))
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 
@@ -190,11 +190,11 @@ func TestHead(t *testing.T) {
 		Value:          value,
 		EncryptionKeys: []string{key},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/kv/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/"+lk, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	req = httptest.NewRequest(http.MethodHead, "/kv/"+lk, nil)
+	req = httptest.NewRequest(http.MethodHead, "/buckets/"+lk, nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -219,11 +219,11 @@ func TestDelete(t *testing.T) {
 		Value:          value,
 		EncryptionKeys: []string{key},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/kv/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/"+lk, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	req = httptest.NewRequest(http.MethodDelete, "/kv/"+lk, nil)
+	req = httptest.NewRequest(http.MethodDelete, "/buckets/"+lk, nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -231,7 +231,7 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("DELETE: got %d, want %d", rec.Code, http.StatusNoContent)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/kv/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/buckets/"+lk, nil)
 	req.Header.Set("X-Encryption-Key", key)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -253,13 +253,13 @@ func TestAddAndRemoveKey(t *testing.T) {
 		Value:          value,
 		EncryptionKeys: []string{key1},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/kv/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/"+lk, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	// Add key2
 	body, _ = json.Marshal(AddKeyRequest{ExistingEncryptionKey: key1, NewEncryptionKey: key2})
-	req = httptest.NewRequest(http.MethodPost, "/kv/"+lk+"/encryption-keys", bytes.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/buckets/"+lk+"/encryption-keys", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -268,7 +268,7 @@ func TestAddAndRemoveKey(t *testing.T) {
 	}
 
 	// GET with key2
-	req = httptest.NewRequest(http.MethodGet, "/kv/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/buckets/"+lk, nil)
 	req.Header.Set("X-Encryption-Key", key2)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -279,7 +279,7 @@ func TestAddAndRemoveKey(t *testing.T) {
 
 	// Remove key1
 	body, _ = json.Marshal(RemoveKeyRequest{ExistingEncryptionKey: key2, RemoveEncryptionKey: key1})
-	req = httptest.NewRequest(http.MethodDelete, "/kv/"+lk+"/encryption-keys", bytes.NewReader(body))
+	req = httptest.NewRequest(http.MethodDelete, "/buckets/"+lk+"/encryption-keys", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -288,7 +288,7 @@ func TestAddAndRemoveKey(t *testing.T) {
 	}
 
 	// key1 should no longer work
-	req = httptest.NewRequest(http.MethodGet, "/kv/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/buckets/"+lk, nil)
 	req.Header.Set("X-Encryption-Key", key1)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -310,7 +310,7 @@ func TestV0PutAndGet(t *testing.T) {
 		EncryptionKey: key,
 		Format:        &format,
 	})
-	req := httptest.NewRequest(http.MethodPut, "/kv/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/"+lk, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -319,7 +319,7 @@ func TestV0PutAndGet(t *testing.T) {
 	}
 
 	// GET with same key
-	req = httptest.NewRequest(http.MethodGet, "/kv/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/buckets/"+lk, nil)
 	req.Header.Set("X-Encryption-Key", key)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -351,11 +351,11 @@ func TestV0WrongKey(t *testing.T) {
 		EncryptionKey: key,
 		Format:        &format,
 	})
-	req := httptest.NewRequest(http.MethodPut, "/kv/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/"+lk, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	req = httptest.NewRequest(http.MethodGet, "/kv/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/buckets/"+lk, nil)
 	req.Header.Set("X-Encryption-Key", wrongKey)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -378,12 +378,12 @@ func TestV0AddKeyRejected(t *testing.T) {
 		EncryptionKey: key,
 		Format:        &format,
 	})
-	req := httptest.NewRequest(http.MethodPut, "/kv/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/"+lk, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	body, _ = json.Marshal(AddKeyRequest{ExistingEncryptionKey: key, NewEncryptionKey: newKey})
-	req = httptest.NewRequest(http.MethodPost, "/kv/"+lk+"/encryption-keys", bytes.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/buckets/"+lk+"/encryption-keys", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -404,11 +404,11 @@ func TestV0HeadFormat(t *testing.T) {
 		EncryptionKey: key,
 		Format:        &format,
 	})
-	req := httptest.NewRequest(http.MethodPut, "/kv/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/"+lk, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	req = httptest.NewRequest(http.MethodHead, "/kv/"+lk, nil)
+	req = httptest.NewRequest(http.MethodHead, "/buckets/"+lk, nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -432,7 +432,7 @@ func TestPutWithoutLookupKeyRejected(t *testing.T) {
 		Value:          value,
 		EncryptionKeys: []string{key},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/kv/", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -451,7 +451,7 @@ func TestPutWithShortLookupKeyRejected(t *testing.T) {
 		EncryptionKeys: []string{key},
 	})
 	// 35 chars — one short of the 36-char minimum
-	req := httptest.NewRequest(http.MethodPut, "/kv/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -470,7 +470,7 @@ func TestPutReturnsKeyInResponse(t *testing.T) {
 		Value:          value,
 		EncryptionKeys: []string{key},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/kv/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/"+lk, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -492,11 +492,11 @@ func TestHeadReturnsFingerprints(t *testing.T) {
 		Value:          value,
 		EncryptionKeys: []string{key1, key2},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/kv/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/buckets/"+lk, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	req = httptest.NewRequest(http.MethodHead, "/kv/"+lk, nil)
+	req = httptest.NewRequest(http.MethodHead, "/buckets/"+lk, nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
