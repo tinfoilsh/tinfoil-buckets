@@ -5,7 +5,7 @@ memory: 4096
 
 containers:
   - name: "confidential-kv"
-    image: "ghcr.io/tinfoilsh/confidential-kv@sha256:placeholder"
+    image: "ghcr.io/tinfoilsh/tinfoil-buckets@sha256:placeholder"
     env:
       - R2_BUCKET_NAME: "kv-store"
     secrets:
