@@ -13,7 +13,7 @@ Clients are responsible for remembering their lookup keys & not sharing these. T
 A random data encryption key (DEK) encrypts the value with AES-256-GCM. The DEK is then wrapped (encrypted) separately under each user-provided key, creating independent **key slots**. This enables:
 
 - Multiple encryption keys for one value
-- Adding or removing keys to a KV entry without re-encrypting the value
+- Adding or removing keys to a bucket entry without re-encrypting the value
 - Automatic version tracking and creation timestamps
 
 ### v0 (legacy) -- Direct Encryption
@@ -25,7 +25,7 @@ The user key encrypts the value directly with AES-256-GCM. Simpler, does not sup
 ### Store a value
 
 ```
-PUT /kv/{lookup_key}
+PUT /buckets/{lookup_key}
 ```
 
 `{lookup_key}` is required and must be at least 36 characters (UUID-length, to ensure adequate entropy).
@@ -35,7 +35,7 @@ PUT /kv/{lookup_key}
 KEY=$(openssl rand -base64 32)
 
 # Store a value (v1, default)
-curl -X PUT http://localhost:8089/kv/uuid \
+curl -X PUT http://localhost:8089/buckets/uuid \
   -H "Content-Type: application/json" \
   -d "{
     \"value\": \"$(echo -n 'hello world' | base64)\",
@@ -65,11 +65,11 @@ curl -X PUT http://localhost:8089/kv/uuid \
 ### Retrieve a value
 
 ```
-GET /kv/{lookup_key}
+GET /buckets/{lookup_key}
 ```
 
 ```bash
-curl http://localhost:8089/kv/uuid \
+curl http://localhost:8089/buckets/uuid \
   -H "X-Encryption-Key: $KEY"
 ```
 
@@ -87,7 +87,7 @@ curl http://localhost:8089/kv/uuid \
 ### Inspect metadata
 
 ```
-HEAD /kv/{lookup_key}
+HEAD /buckets/{lookup_key}
 ```
 
 Returns headers without decrypting the value:
@@ -103,7 +103,7 @@ Returns headers without decrypting the value:
 ### Delete a value
 
 ```
-DELETE /kv/{lookup_key}
+DELETE /buckets/{lookup_key}
 ```
 
 Returns `204 No Content`.
@@ -111,7 +111,7 @@ Returns `204 No Content`.
 ### Add an encryption key
 
 ```
-POST /kv/{lookup_key}/encryption-keys
+POST /buckets/{lookup_key}/encryption-keys
 ```
 
 Adds a new key slot to a v1 envelope without re-encrypting the value. Requires an existing authorized encryption key to unwrap the DEK.
@@ -126,7 +126,7 @@ Adds a new key slot to a v1 envelope without re-encrypting the value. Requires a
 ### Remove an encryption key
 
 ```
-DELETE /kv/{lookup_key}/encryption-keys
+DELETE /buckets/{lookup_key}/encryption-keys
 ```
 
 Removes a key slot from a v1 envelope. Cannot remove the last encryption key.
@@ -170,7 +170,7 @@ Each key slot is 92 bytes: a SHA-256 fingerprint of the encryption key (32B) fol
 | ----------------------- | ---------- | --------------------- |
 | `CLOUDFLARE_ACCOUNT_ID` | required   | Cloudflare account ID |
 | `CLOUDFLARE_API_TOKEN`  | required   | Cloudflare API token  |
-| `R2_BUCKET_NAME`        | `kv-store` | R2 bucket name        |
+| `R2_BUCKET_NAME`        | `tinfoil-bucket` | R2 bucket name  |
 | `LISTEN_ADDR`           | `:8089`    | HTTP listen address   |
 
 ## Running
@@ -185,11 +185,11 @@ go run .
 ### Docker
 
 ```bash
-docker build -t confidential-kv .
+docker build -t tinfoil-buckets .
 docker run -p 8089:8089 \
   -e CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID \
   -e CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN \
-  confidential-kv
+  tinfoil-buckets
 ```
 
 ## Security

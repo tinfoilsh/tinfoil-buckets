@@ -13,7 +13,7 @@ func Load() *Config {
 	return &Config{
 		CloudflareAccountID: os.Getenv("CLOUDFLARE_ACCOUNT_ID"),
 		CloudflareAPIToken:  os.Getenv("CLOUDFLARE_API_TOKEN"),
-		R2BucketName:        getEnv("R2_BUCKET_NAME", "kv-store"),
+		R2BucketName:        getEnv("R2_BUCKET_NAME", "tinfoil-bucket"),
 		ListenAddr:          getEnv("LISTEN_ADDR", ":8089"),
 	}
 }

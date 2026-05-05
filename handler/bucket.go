@@ -12,19 +12,19 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/tinfoilsh/confidential-kv/crypto"
-	"github.com/tinfoilsh/confidential-kv/store"
+	"github.com/tinfoilsh/tinfoil-buckets/crypto"
+	"github.com/tinfoilsh/tinfoil-buckets/store"
 )
 
-type KVHandler struct {
+type BucketHandler struct {
 	store *store.R2Store
 }
 
-func NewKVHandler(store *store.R2Store) *KVHandler {
-	return &KVHandler{store: store}
+func NewBucketHandler(store *store.R2Store) *BucketHandler {
+	return &BucketHandler{store: store}
 }
 
-// PUT /kv/{lookup_key}
+// PUT /buckets/{lookup_key}
 type PutRequest struct {
 	Value          string   `json:"value"`                     // base64-encoded
 	EncryptionKeys []string `json:"encryption_keys,omitempty"` // base64-encoded 32-byte keys (required for v1)
@@ -38,19 +38,19 @@ type PutResponse struct {
 	CreatedAt string `json:"created_at,omitempty"`
 }
 
-// POST /kv/{lookup_key}/encryption-keys
+// POST /buckets/{lookup_key}/encryption-keys
 type AddKeyRequest struct {
 	ExistingEncryptionKey string `json:"existing_encryption_key"` // base64
 	NewEncryptionKey      string `json:"new_encryption_key"`      // base64
 }
 
-// DELETE /kv/{lookup_key}/encryption-keys
+// DELETE /buckets/{lookup_key}/encryption-keys
 type RemoveKeyRequest struct {
 	ExistingEncryptionKey string `json:"existing_encryption_key"` // base64
 	RemoveEncryptionKey   string `json:"remove_encryption_key"`   // base64
 }
 
-// GET /kv/{lookup_key} response
+// GET /buckets/{lookup_key} response
 type GetResponse struct {
 	Value     string `json:"value"`                // base64-encoded
 	Version   uint64 `json:"version,omitempty"`    // v1 only
@@ -64,6 +64,7 @@ type ErrorResponse struct {
 
 const (
 	minLookupKeyLength = 36
+	routePrefix        = "/buckets/"
 )
 
 func validateLookupKey(lookupKey string) error {
@@ -76,14 +77,14 @@ func validateLookupKey(lookupKey string) error {
 	return nil
 }
 
-func (h *KVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *BucketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
-	if !strings.HasPrefix(path, "/kv/") {
+	if !strings.HasPrefix(path, routePrefix) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
-	rest := path[len("/kv/"):]
+	rest := path[len(routePrefix):]
 
 	if lookupKey, ok := strings.CutSuffix(rest, "/encryption-keys"); ok {
 		if err := validateLookupKey(lookupKey); err != nil {
@@ -122,7 +123,7 @@ func (h *KVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *KVHandler) handlePut(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *BucketHandler) handlePut(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	var req PutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -209,7 +210,7 @@ func (h *KVHandler) handlePut(w http.ResponseWriter, r *http.Request, lookupKey 
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *KVHandler) handleGet(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *BucketHandler) handleGet(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	encKeyB64 := r.Header.Get("X-Encryption-Key")
 	if encKeyB64 == "" {
 		writeError(w, http.StatusBadRequest, "X-Encryption-Key header is required")
@@ -261,7 +262,7 @@ func (h *KVHandler) handleGet(w http.ResponseWriter, r *http.Request, lookupKey 
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *KVHandler) handleHead(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *BucketHandler) handleHead(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	data, err := h.store.Get(r.Context(), lookupKey)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
@@ -294,7 +295,7 @@ func (h *KVHandler) handleHead(w http.ResponseWriter, r *http.Request, lookupKey
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *KVHandler) handleDelete(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *BucketHandler) handleDelete(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	if err := h.store.Delete(r.Context(), lookupKey); err != nil {
 		log.Errorf("failed to delete: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
@@ -303,7 +304,7 @@ func (h *KVHandler) handleDelete(w http.ResponseWriter, r *http.Request, lookupK
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *KVHandler) handleAddKey(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *BucketHandler) handleAddKey(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	var req AddKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -358,7 +359,7 @@ func (h *KVHandler) handleAddKey(w http.ResponseWriter, r *http.Request, lookupK
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *KVHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *BucketHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	var req RemoveKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")

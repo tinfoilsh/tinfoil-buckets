@@ -4,10 +4,10 @@ cpus: 2
 memory: 4096
 
 containers:
-  - name: "confidential-kv"
+  - name: "tinfoil-buckets"
     image: "ghcr.io/tinfoilsh/tinfoil-buckets@sha256:4c67e0f7ad9288e1c08307010e429c3ef5d7c76f83d35dc8c43a2c9dceeaf302" # v0.0.1
     env:
-      - R2_BUCKET_NAME: "kv-store"
+      - R2_BUCKET_NAME: "tinfoil-bucket"
     secrets:
       - CLOUDFLARE_ACCOUNT_ID
       - CLOUDFLARE_API_TOKEN
@@ -16,6 +16,6 @@ shim:
   listen-port: 443
   upstream-port: 8089
   paths:
-    - /kv/
+    - /buckets/
     - /mcp
     - /health

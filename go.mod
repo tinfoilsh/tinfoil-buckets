@@ -1,4 +1,4 @@
-module github.com/tinfoilsh/confidential-kv
+module github.com/tinfoilsh/tinfoil-buckets
 
 go 1.25.5
 

@@ -10,9 +10,9 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/tinfoilsh/confidential-kv/config"
-	"github.com/tinfoilsh/confidential-kv/handler"
-	"github.com/tinfoilsh/confidential-kv/store"
+	"github.com/tinfoilsh/tinfoil-buckets/config"
+	"github.com/tinfoilsh/tinfoil-buckets/handler"
+	"github.com/tinfoilsh/tinfoil-buckets/store"
 )
 
 func main() {
@@ -24,10 +24,10 @@ func main() {
 
 	r2 := store.NewR2Store(cfg.CloudflareAccountID, cfg.CloudflareAPIToken, cfg.CloudflareAPIToken, cfg.R2BucketName)
 
-	kvHandler := handler.NewKVHandler(r2)
+	bucketHandler := handler.NewBucketHandler(r2)
 
 	mux := http.NewServeMux()
-	mux.Handle("/kv/", kvHandler)
+	mux.Handle("/buckets/", bucketHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
@@ -44,7 +44,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Infof("Starting confidential-kv server on %s", cfg.ListenAddr)
+		log.Infof("Starting tinfoil-buckets server on %s", cfg.ListenAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
 		}
