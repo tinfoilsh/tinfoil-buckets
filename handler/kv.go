@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/tinfoilsh/confidential-kv/crypto"
@@ -68,7 +67,20 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
-const encryptionKeysSuffix = "/encryption-keys"
+const (
+	encryptionKeysSuffix = "/encryption-keys"
+	minLookupKeyLength   = 36
+)
+
+func validateLookupKey(lookupKey string) error {
+	if lookupKey == "" {
+		return fmt.Errorf("lookup_key is required")
+	}
+	if len(lookupKey) < minLookupKeyLength {
+		return fmt.Errorf("lookup_key must be at least %d characters", minLookupKeyLength)
+	}
+	return nil
+}
 
 func (h *KVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
@@ -80,8 +92,8 @@ func (h *KVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rest := path[len("/kv/"):]
 
 	if lookupKey, ok := strings.CutSuffix(rest, encryptionKeysSuffix); ok {
-		if lookupKey == "" {
-			writeError(w, http.StatusBadRequest, "lookup_key is required")
+		if err := validateLookupKey(lookupKey); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		switch r.Method {
@@ -97,29 +109,24 @@ func (h *KVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	lookupKey := rest
 
+	if r.Method == http.MethodGet && lookupKey == "" {
+		h.handleList(w, r)
+		return
+	}
+
+	if err := validateLookupKey(lookupKey); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	switch r.Method {
 	case http.MethodPut:
-		if lookupKey == "" {
-			lookupKey = uuid.New().String()
-		}
 		h.handlePut(w, r, lookupKey)
 	case http.MethodGet:
-		if lookupKey == "" {
-			h.handleList(w, r)
-			return
-		}
 		h.handleGet(w, r, lookupKey)
 	case http.MethodHead:
-		if lookupKey == "" {
-			writeError(w, http.StatusBadRequest, "lookup_key is required")
-			return
-		}
 		h.handleHead(w, r, lookupKey)
 	case http.MethodDelete:
-		if lookupKey == "" {
-			writeError(w, http.StatusBadRequest, "lookup_key is required")
-			return
-		}
 		h.handleDelete(w, r, lookupKey)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

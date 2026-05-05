@@ -28,7 +28,7 @@ The user key encrypts the value directly with AES-256-GCM. Simpler, does not sup
 PUT /kv/{lookup_key}
 ```
 
-If `{lookup_key}` is omitted, a UUID is generated.
+`{lookup_key}` is required and must be at least 36 characters (UUID-length, to ensure adequate entropy).
 
 ```bash
 # Generate a 256-bit encryption key
