@@ -5,7 +5,7 @@ memory: 4096
 
 containers:
   - name: "tinfoil-buckets"
-    image: "ghcr.io/tinfoilsh/tinfoil-buckets@sha256:4c67e0f7ad9288e1c08307010e429c3ef5d7c76f83d35dc8c43a2c9dceeaf302" # v0.0.1
+    image: "ghcr.io/tinfoilsh/tinfoil-buckets@sha256:24fe3fbe1b8202036f3b96455356dc45c4dfe922912f4c03415679efbf09a2b9" # v0.0.2
     env:
       - R2_BUCKET_NAME: "tinfoil-bucket"
     secrets:
