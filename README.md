@@ -1,10 +1,10 @@
 # Confidential Tinfoil Buckets
 
-A primitive encryptor with blob storage powered by Cloudflare R2 buckets, designed to run inside a [Tinfoil](https://tinfoil.sh) confidential enclave.
+An encrypted key value store powered by Cloudflare R2 buckets, designed to run inside a [Tinfoil](https://tinfoil.sh) confidential enclave.
 
 Values are encrypted before they reach storage. Clients supply encryption keys with each request, all cryptographic operations happen in-memory inside the enclave, and then the ciphertext is stored in R2 buckets.
 
-Key Value Store.
+Clients are responsible for remembering their lookup keys.
 
 ## Encryption Formats
 
