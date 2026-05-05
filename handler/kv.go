@@ -25,7 +25,7 @@ func NewKVHandler(store *store.R2Store) *KVHandler {
 	return &KVHandler{store: store}
 }
 
-// PUT /kv/{key}
+// PUT /kv/{lookup_key}
 type PutRequest struct {
 	Value          string   `json:"value"`                     // base64-encoded
 	EncryptionKeys []string `json:"encryption_keys,omitempty"` // base64-encoded 32-byte keys (required for v1)
@@ -34,24 +34,24 @@ type PutRequest struct {
 }
 
 type PutResponse struct {
-	Key       string `json:"key"`
+	LookupKey string `json:"lookup_key"`
 	Version   uint64 `json:"version,omitempty"`
 	CreatedAt string `json:"created_at,omitempty"`
 }
 
-// POST /kv/{key}/keys
+// POST /kv/{lookup_key}/encryption-keys
 type AddKeyRequest struct {
-	ExistingKey string `json:"existing_key"` // base64
-	NewKey      string `json:"new_key"`      // base64
+	ExistingEncryptionKey string `json:"existing_encryption_key"` // base64
+	NewEncryptionKey      string `json:"new_encryption_key"`      // base64
 }
 
-// DELETE /kv/{key}/keys
+// DELETE /kv/{lookup_key}/encryption-keys
 type RemoveKeyRequest struct {
-	ExistingKey string `json:"existing_key"` // base64
-	RemoveKey   string `json:"remove_key"`   // base64
+	ExistingEncryptionKey string `json:"existing_encryption_key"` // base64
+	RemoveEncryptionKey   string `json:"remove_encryption_key"`   // base64
 }
 
-// GET /kv/{key} response
+// GET /kv/{lookup_key} response
 type GetResponse struct {
 	Value     string `json:"value"`                // base64-encoded
 	Version   uint64 `json:"version,omitempty"`    // v1 only
@@ -59,82 +59,74 @@ type GetResponse struct {
 	Format    uint8  `json:"format"`
 }
 
-// HEAD /kv/{key} metadata
-type HeadResponse struct {
-	Version   uint64 `json:"version"`
-	CreatedAt string `json:"created_at"`
-	NumKeys   int    `json:"num_keys"`
-}
-
 // GET /kv/?prefix=&max_keys= response
 type ListResponse struct {
-	Keys []string `json:"keys"`
+	LookupKeys []string `json:"lookup_keys"`
 }
 
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
+const encryptionKeysSuffix = "/encryption-keys"
+
 func (h *KVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Route: /kv/{key} or /kv/{key}/keys
 	path := r.URL.Path
 	if !strings.HasPrefix(path, "/kv/") {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
-	rest := path[4:] // everything after "/kv/"
+	rest := path[len("/kv/"):]
 
-	// Check if it's a /keys sub-route
-	if idx := lastIndex(rest, "/keys"); idx >= 0 && idx+5 == len(rest) {
-		key := rest[:idx]
-		if key == "" {
-			writeError(w, http.StatusBadRequest, "key is required")
+	if lookupKey, ok := strings.CutSuffix(rest, encryptionKeysSuffix); ok {
+		if lookupKey == "" {
+			writeError(w, http.StatusBadRequest, "lookup_key is required")
 			return
 		}
 		switch r.Method {
 		case http.MethodPost:
-			h.handleAddKey(w, r, key)
+			h.handleAddKey(w, r, lookupKey)
 		case http.MethodDelete:
-			h.handleRemoveKey(w, r, key)
+			h.handleRemoveKey(w, r, lookupKey)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 		return
 	}
 
-	key := rest
+	lookupKey := rest
 
 	switch r.Method {
 	case http.MethodPut:
-		if key == "" {
-			key = uuid.New().String()
+		if lookupKey == "" {
+			lookupKey = uuid.New().String()
 		}
-		h.handlePut(w, r, key)
+		h.handlePut(w, r, lookupKey)
 	case http.MethodGet:
-		if key == "" {
+		if lookupKey == "" {
 			h.handleList(w, r)
 			return
 		}
-		h.handleGet(w, r, key)
+		h.handleGet(w, r, lookupKey)
 	case http.MethodHead:
-		if key == "" {
-			writeError(w, http.StatusBadRequest, "key is required")
+		if lookupKey == "" {
+			writeError(w, http.StatusBadRequest, "lookup_key is required")
 			return
 		}
-		h.handleHead(w, r, key)
+		h.handleHead(w, r, lookupKey)
 	case http.MethodDelete:
-		if key == "" {
-			writeError(w, http.StatusBadRequest, "key is required")
+		if lookupKey == "" {
+			writeError(w, http.StatusBadRequest, "lookup_key is required")
 			return
 		}
-		h.handleDelete(w, r, key)
+		h.handleDelete(w, r, lookupKey)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (h *KVHandler) handlePut(w http.ResponseWriter, r *http.Request, key string) {
+func (h *KVHandler) handlePut(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	var req PutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -152,6 +144,7 @@ func (h *KVHandler) handlePut(w http.ResponseWriter, r *http.Request, key string
 		format = uint8(*req.Format)
 	}
 
+	resp := PutResponse{LookupKey: lookupKey}
 	var blob []byte
 
 	switch format {
@@ -173,7 +166,7 @@ func (h *KVHandler) handlePut(w http.ResponseWriter, r *http.Request, key string
 		}
 
 	case crypto.FormatV1:
-		userKeys, err := decodeKeys(req.EncryptionKeys)
+		userKeys, err := decodeEncryptionKeys(req.EncryptionKeys)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -182,9 +175,9 @@ func (h *KVHandler) handlePut(w http.ResponseWriter, r *http.Request, key string
 		var version uint64 = 1
 		createdAt := time.Now()
 
-		existing, err := h.store.Get(r.Context(), key)
+		existing, err := h.store.Get(r.Context(), lookupKey)
 		if err != nil {
-			log.Errorf("failed to check existing key: %v", err)
+			log.Errorf("failed to check existing lookup_key: %v", err)
 			writeError(w, http.StatusInternalServerError, "storage error")
 			return
 		}
@@ -203,34 +196,24 @@ func (h *KVHandler) handlePut(w http.ResponseWriter, r *http.Request, key string
 			return
 		}
 
-		if err := h.store.Put(r.Context(), key, blob); err != nil {
-			log.Errorf("failed to store: %v", err)
-			writeError(w, http.StatusInternalServerError, "storage error")
-			return
-		}
-
-		writeJSON(w, http.StatusOK, PutResponse{
-			Key:       key,
-			Version:   version,
-			CreatedAt: createdAt.UTC().Format(time.RFC3339Nano),
-		})
-		return
+		resp.Version = version
+		resp.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
 
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported format: %d", format))
 		return
 	}
 
-	if err := h.store.Put(r.Context(), key, blob); err != nil {
+	if err := h.store.Put(r.Context(), lookupKey, blob); err != nil {
 		log.Errorf("failed to store: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, PutResponse{Key: key})
+	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *KVHandler) handleGet(w http.ResponseWriter, r *http.Request, key string) {
+func (h *KVHandler) handleGet(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	encKeyB64 := r.Header.Get("X-Encryption-Key")
 	if encKeyB64 == "" {
 		writeError(w, http.StatusBadRequest, "X-Encryption-Key header is required")
@@ -243,14 +226,14 @@ func (h *KVHandler) handleGet(w http.ResponseWriter, r *http.Request, key string
 		return
 	}
 
-	data, err := h.store.Get(r.Context(), key)
+	data, err := h.store.Get(r.Context(), lookupKey)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
 	if data == nil {
-		writeError(w, http.StatusNotFound, "key not found")
+		writeError(w, http.StatusNotFound, "lookup_key not found")
 		return
 	}
 
@@ -282,8 +265,8 @@ func (h *KVHandler) handleGet(w http.ResponseWriter, r *http.Request, key string
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *KVHandler) handleHead(w http.ResponseWriter, r *http.Request, key string) {
-	data, err := h.store.Get(r.Context(), key)
+func (h *KVHandler) handleHead(w http.ResponseWriter, r *http.Request, lookupKey string) {
+	data, err := h.store.Get(r.Context(), lookupKey)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
@@ -304,19 +287,19 @@ func (h *KVHandler) handleHead(w http.ResponseWriter, r *http.Request, key strin
 	if meta.FormatVersion == crypto.FormatV1 {
 		w.Header().Set("X-Version", strconv.FormatUint(meta.ValueVersion, 10))
 		w.Header().Set("X-Created-At", meta.CreatedAt.UTC().Format(time.RFC3339Nano))
-		w.Header().Set("X-Num-Keys", strconv.Itoa(len(meta.KeySlots)))
+		w.Header().Set("X-Num-Encryption-Keys", strconv.Itoa(len(meta.KeySlots)))
 
 		fingerprints := make([]string, len(meta.KeySlots))
 		for i, slot := range meta.KeySlots {
 			fingerprints[i] = hex.EncodeToString(slot.KeyID[:])
 		}
-		w.Header().Set("X-Key-Fingerprints", strings.Join(fingerprints, ","))
+		w.Header().Set("X-Encryption-Key-Fingerprints", strings.Join(fingerprints, ","))
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *KVHandler) handleDelete(w http.ResponseWriter, r *http.Request, key string) {
-	if err := h.store.Delete(r.Context(), key); err != nil {
+func (h *KVHandler) handleDelete(w http.ResponseWriter, r *http.Request, lookupKey string) {
+	if err := h.store.Delete(r.Context(), lookupKey); err != nil {
 		log.Errorf("failed to delete: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
@@ -346,35 +329,35 @@ func (h *KVHandler) handleList(w http.ResponseWriter, r *http.Request) {
 	if keys == nil {
 		keys = []string{}
 	}
-	writeJSON(w, http.StatusOK, ListResponse{Keys: keys})
+	writeJSON(w, http.StatusOK, ListResponse{LookupKeys: keys})
 }
 
-func (h *KVHandler) handleAddKey(w http.ResponseWriter, r *http.Request, key string) {
+func (h *KVHandler) handleAddKey(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	var req AddKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	existingKey, err := base64.StdEncoding.DecodeString(req.ExistingKey)
+	existingKey, err := base64.StdEncoding.DecodeString(req.ExistingEncryptionKey)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid base64 existing_key")
+		writeError(w, http.StatusBadRequest, "invalid base64 existing_encryption_key")
 		return
 	}
-	newKey, err := base64.StdEncoding.DecodeString(req.NewKey)
+	newKey, err := base64.StdEncoding.DecodeString(req.NewEncryptionKey)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid base64 new_key")
+		writeError(w, http.StatusBadRequest, "invalid base64 new_encryption_key")
 		return
 	}
 
-	data, err := h.store.Get(r.Context(), key)
+	data, err := h.store.Get(r.Context(), lookupKey)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
 	if data == nil {
-		writeError(w, http.StatusNotFound, "key not found")
+		writeError(w, http.StatusNotFound, "lookup_key not found")
 		return
 	}
 
@@ -395,7 +378,7 @@ func (h *KVHandler) handleAddKey(w http.ResponseWriter, r *http.Request, key str
 		return
 	}
 
-	if err := h.store.Put(r.Context(), key, updated); err != nil {
+	if err := h.store.Put(r.Context(), lookupKey, updated); err != nil {
 		log.Errorf("failed to store: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
@@ -404,32 +387,32 @@ func (h *KVHandler) handleAddKey(w http.ResponseWriter, r *http.Request, key str
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *KVHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, key string) {
+func (h *KVHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, lookupKey string) {
 	var req RemoveKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	existingKey, err := base64.StdEncoding.DecodeString(req.ExistingKey)
+	existingKey, err := base64.StdEncoding.DecodeString(req.ExistingEncryptionKey)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid base64 existing_key")
+		writeError(w, http.StatusBadRequest, "invalid base64 existing_encryption_key")
 		return
 	}
-	removeKey, err := base64.StdEncoding.DecodeString(req.RemoveKey)
+	removeKey, err := base64.StdEncoding.DecodeString(req.RemoveEncryptionKey)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid base64 remove_key")
+		writeError(w, http.StatusBadRequest, "invalid base64 remove_encryption_key")
 		return
 	}
 
-	data, err := h.store.Get(r.Context(), key)
+	data, err := h.store.Get(r.Context(), lookupKey)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
 	if data == nil {
-		writeError(w, http.StatusNotFound, "key not found")
+		writeError(w, http.StatusNotFound, "lookup_key not found")
 		return
 	}
 
@@ -450,7 +433,7 @@ func (h *KVHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, key 
 		return
 	}
 
-	if err := h.store.Put(r.Context(), key, updated); err != nil {
+	if err := h.store.Put(r.Context(), lookupKey, updated); err != nil {
 		log.Errorf("failed to store: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
@@ -459,7 +442,7 @@ func (h *KVHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, key 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func decodeKeys(b64Keys []string) ([][]byte, error) {
+func decodeEncryptionKeys(b64Keys []string) ([][]byte, error) {
 	if len(b64Keys) == 0 {
 		return nil, fmt.Errorf("at least one encryption key is required")
 	}
@@ -467,20 +450,11 @@ func decodeKeys(b64Keys []string) ([][]byte, error) {
 	for i, k := range b64Keys {
 		decoded, err := base64.StdEncoding.DecodeString(k)
 		if err != nil {
-			return nil, fmt.Errorf("invalid base64 key at index %d", i)
+			return nil, fmt.Errorf("invalid base64 encryption key at index %d", i)
 		}
 		keys[i] = decoded
 	}
 	return keys, nil
-}
-
-func lastIndex(s, substr string) int {
-	for i := len(s) - len(substr); i >= 0; i-- {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

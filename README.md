@@ -1,8 +1,10 @@
-# Confidential KV
+# Confidential Tinfoil Buckets
 
-An encrypted key-value store backed by Cloudflare R2, designed to run inside a [Tinfoil](https://tinfoil.sh) confidential enclave.
+A primitive encryptor with blob storage powered by Cloudflare R2 buckets, designed to run inside a [Tinfoil](https://tinfoil.sh) confidential enclave.
 
-Values are encrypted before they reach storage. The server never persists plaintext -- clients supply their encryption keys with each request, and all cryptographic operations happen in-memory inside the enclave.
+Values are encrypted before they reach storage. Clients supply encryption keys with each request, all cryptographic operations happen in-memory inside the enclave, and then the ciphertext is stored in R2 buckets.
+
+Key Value Store.
 
 ## Encryption Formats
 
@@ -10,30 +12,30 @@ Values are encrypted before they reach storage. The server never persists plaint
 
 A random data encryption key (DEK) encrypts the value with AES-256-GCM. The DEK is then wrapped (encrypted) separately under each user-provided key, creating independent **key slots**. This enables:
 
-- Multiple users/keys per value
-- Adding or removing keys without re-encrypting the value
+- Multiple encryption keys for one value
+- Adding or removing keys to a KV entry without re-encrypting the value
 - Automatic version tracking and creation timestamps
 
-### v0 -- Direct Encryption
+### v0 (legacy) -- Direct Encryption
 
-The user key encrypts the value directly with AES-256-GCM. Simpler, but does not support multiple keys or key rotation.
+The user key encrypts the value directly with AES-256-GCM. Simpler, does not support multiple encryption keys or encryption key rotation.
 
 ## API
 
 ### Store a value
 
 ```
-PUT /kv/{key}
+PUT /kv/{lookup_key}
 ```
 
-If `{key}` is omitted, a UUID is generated.
+If `{lookup_key}` is omitted, a UUID is generated.
 
 ```bash
-# Generate a 256-bit key
+# Generate a 256-bit encryption key
 KEY=$(openssl rand -base64 32)
 
 # Store a value (v1, default)
-curl -X PUT http://localhost:8089/kv/my-key \
+curl -X PUT http://localhost:8089/kv/my-lookup-key \
   -H "Content-Type: application/json" \
   -d "{
     \"value\": \"$(echo -n 'hello world' | base64)\",
@@ -43,18 +45,18 @@ curl -X PUT http://localhost:8089/kv/my-key \
 
 **Request body:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `value` | string | Base64-encoded plaintext |
-| `encryption_keys` | string[] | Base64-encoded 32-byte keys (v1) |
-| `encryption_key` | string | Single base64-encoded 32-byte key (v0) |
-| `format` | int | `0` or `1` (default: `1`) |
+| Field             | Type     | Description                                       |
+| ----------------- | -------- | ------------------------------------------------- |
+| `value`           | string   | Base64-encoded plaintext                          |
+| `encryption_keys` | string[] | Base64-encoded 32-byte encryption keys (v1)       |
+| `encryption_key`  | string   | Single base64-encoded 32-byte encryption key (v0) |
+| `format`          | int      | `0` or `1` (default: `1`)                         |
 
 **Response:**
 
 ```json
 {
-  "key": "my-key",
+  "lookup_key": "my-lookup-key",
   "version": 1,
   "created_at": "2026-04-10T12:00:00.000Z"
 }
@@ -63,11 +65,11 @@ curl -X PUT http://localhost:8089/kv/my-key \
 ### Retrieve a value
 
 ```
-GET /kv/{key}
+GET /kv/{lookup_key}
 ```
 
 ```bash
-curl http://localhost:8089/kv/my-key \
+curl http://localhost:8089/kv/my-lookup-key \
   -H "X-Encryption-Key: $KEY"
 ```
 
@@ -85,28 +87,28 @@ curl http://localhost:8089/kv/my-key \
 ### Inspect metadata
 
 ```
-HEAD /kv/{key}
+HEAD /kv/{lookup_key}
 ```
 
 Returns headers without decrypting the value:
 
-| Header | Description |
-|--------|-------------|
-| `X-Format` | `0` or `1` |
-| `X-Version` | Value version (v1 only) |
-| `X-Created-At` | Creation timestamp (v1 only) |
-| `X-Num-Keys` | Number of key slots (v1 only) |
-| `X-Key-Fingerprints` | Comma-separated SHA-256 key IDs (v1 only) |
+| Header                          | Description                                          |
+| ------------------------------- | ---------------------------------------------------- |
+| `X-Format`                      | `0` or `1`                                           |
+| `X-Version`                     | Value version (v1 only)                              |
+| `X-Created-At`                  | Creation timestamp (v1 only)                         |
+| `X-Num-Encryption-Keys`         | Number of encryption-key slots (v1 only)             |
+| `X-Encryption-Key-Fingerprints` | Comma-separated SHA-256 encryption-key IDs (v1 only) |
 
 ### Delete a value
 
 ```
-DELETE /kv/{key}
+DELETE /kv/{lookup_key}
 ```
 
 Returns `204 No Content`.
 
-### List keys
+### List lookup keys
 
 ```
 GET /kv/?prefix={prefix}&max_keys={n}
@@ -121,36 +123,36 @@ curl 'http://localhost:8089/kv/?prefix=user-'
 **Response:**
 
 ```json
-{ "keys": ["user-alice", "user-bob"] }
+{ "lookup_keys": ["user-alice", "user-bob"] }
 ```
 
 ### Add an encryption key
 
 ```
-POST /kv/{key}/keys
+POST /kv/{lookup_key}/encryption-keys
 ```
 
-Adds a new key slot to a v1 envelope without re-encrypting the value. Requires an existing authorized key to unwrap the DEK.
+Adds a new key slot to a v1 envelope without re-encrypting the value. Requires an existing authorized encryption key to unwrap the DEK.
 
 ```json
 {
-  "existing_key": "<base64 key that can currently decrypt>",
-  "new_key": "<base64 key to add>"
+  "existing_encryption_key": "<base64 encryption key that can currently decrypt>",
+  "new_encryption_key": "<base64 encryption key to add>"
 }
 ```
 
 ### Remove an encryption key
 
 ```
-DELETE /kv/{key}/keys
+DELETE /kv/{lookup_key}/encryption-keys
 ```
 
-Removes a key slot from a v1 envelope. Cannot remove the last key.
+Removes a key slot from a v1 envelope. Cannot remove the last encryption key.
 
 ```json
 {
-  "existing_key": "<base64 key that can currently decrypt>",
-  "remove_key": "<base64 key to remove>"
+  "existing_encryption_key": "<base64 encryption key that can currently decrypt>",
+  "remove_encryption_key": "<base64 encryption key to remove>"
 }
 ```
 
@@ -178,16 +180,16 @@ Returns `{"status":"ok"}`.
 [IV: 12B] [AES-GCM ciphertext + tag]
 ```
 
-Each key slot is 92 bytes: a SHA-256 fingerprint of the user key (32B) followed by the DEK encrypted with that user key (IV 12B + ciphertext 32B + GCM tag 16B).
+Each key slot is 92 bytes: a SHA-256 fingerprint of the encryption key (32B) followed by the DEK encrypted with that encryption key (IV 12B + ciphertext 32B + GCM tag 16B).
 
 ## Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CLOUDFLARE_ACCOUNT_ID` | required | Cloudflare account ID |
-| `CLOUDFLARE_API_TOKEN` | required | Cloudflare API token |
-| `R2_BUCKET_NAME` | `kv-store` | R2 bucket name |
-| `LISTEN_ADDR` | `:8089` | HTTP listen address |
+| Variable                | Default    | Description           |
+| ----------------------- | ---------- | --------------------- |
+| `CLOUDFLARE_ACCOUNT_ID` | required   | Cloudflare account ID |
+| `CLOUDFLARE_API_TOKEN`  | required   | Cloudflare API token  |
+| `R2_BUCKET_NAME`        | `kv-store` | R2 bucket name        |
+| `LISTEN_ADDR`           | `:8089`    | HTTP listen address   |
 
 ## Running
 
@@ -212,7 +214,7 @@ docker run -p 8089:8089 \
 
 - Designed for [Tinfoil](https://tinfoil.sh) confidential enclaves -- all processing occurs within a trusted execution environment
 - The server never stores plaintext values or encryption keys
-- Clients supply keys per-request; keys exist in-memory only during the operation
+- Clients supply encryption keys per-request; keys exist in-memory only during the operation
 - All cryptography uses Go's standard library (`crypto/aes`, `crypto/cipher`, `crypto/rand`)
 - AES-256-GCM provides authenticated encryption with 128-bit authentication tags
 

@@ -205,8 +205,8 @@ func TestHead(t *testing.T) {
 	if rec.Header().Get("X-Version") != "1" {
 		t.Fatalf("X-Version: got %q, want %q", rec.Header().Get("X-Version"), "1")
 	}
-	if rec.Header().Get("X-Num-Keys") != "1" {
-		t.Fatalf("X-Num-Keys: got %q, want %q", rec.Header().Get("X-Num-Keys"), "1")
+	if rec.Header().Get("X-Num-Encryption-Keys") != "1" {
+		t.Fatalf("X-Num-Encryption-Keys: got %q, want %q", rec.Header().Get("X-Num-Encryption-Keys"), "1")
 	}
 }
 
@@ -257,8 +257,8 @@ func TestAddAndRemoveKey(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	// Add key2
-	body, _ = json.Marshal(AddKeyRequest{ExistingKey: key1, NewKey: key2})
-	req = httptest.NewRequest(http.MethodPost, "/kv/shared/keys", bytes.NewReader(body))
+	body, _ = json.Marshal(AddKeyRequest{ExistingEncryptionKey: key1, NewEncryptionKey: key2})
+	req = httptest.NewRequest(http.MethodPost, "/kv/shared/encryption-keys", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -277,8 +277,8 @@ func TestAddAndRemoveKey(t *testing.T) {
 	}
 
 	// Remove key1
-	body, _ = json.Marshal(RemoveKeyRequest{ExistingKey: key2, RemoveKey: key1})
-	req = httptest.NewRequest(http.MethodDelete, "/kv/shared/keys", bytes.NewReader(body))
+	body, _ = json.Marshal(RemoveKeyRequest{ExistingEncryptionKey: key2, RemoveEncryptionKey: key1})
+	req = httptest.NewRequest(http.MethodDelete, "/kv/shared/encryption-keys", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -378,8 +378,8 @@ func TestV0AddKeyRejected(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	body, _ = json.Marshal(AddKeyRequest{ExistingKey: key, NewKey: newKey})
-	req = httptest.NewRequest(http.MethodPost, "/kv/v0-nokeys/keys", bytes.NewReader(body))
+	body, _ = json.Marshal(AddKeyRequest{ExistingEncryptionKey: key, NewEncryptionKey: newKey})
+	req = httptest.NewRequest(http.MethodPost, "/kv/v0-nokeys/encryption-keys", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -438,15 +438,15 @@ func TestPutAutoGeneratesUUID(t *testing.T) {
 
 	var putResp PutResponse
 	json.NewDecoder(rec.Body).Decode(&putResp)
-	if putResp.Key == "" {
+	if putResp.LookupKey == "" {
 		t.Fatal("expected auto-generated key, got empty")
 	}
-	if len(putResp.Key) != 36 {
-		t.Fatalf("expected UUID (36 chars), got %q (%d chars)", putResp.Key, len(putResp.Key))
+	if len(putResp.LookupKey) != 36 {
+		t.Fatalf("expected UUID (36 chars), got %q (%d chars)", putResp.LookupKey, len(putResp.LookupKey))
 	}
 
 	// GET with the returned key
-	req = httptest.NewRequest(http.MethodGet, "/kv/"+putResp.Key, nil)
+	req = httptest.NewRequest(http.MethodGet, "/kv/"+putResp.LookupKey, nil)
 	req.Header.Set("X-Encryption-Key", key)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -477,8 +477,8 @@ func TestPutReturnsKeyInResponse(t *testing.T) {
 
 	var putResp PutResponse
 	json.NewDecoder(rec.Body).Decode(&putResp)
-	if putResp.Key != "my-explicit-key" {
-		t.Fatalf("key: got %q, want %q", putResp.Key, "my-explicit-key")
+	if putResp.LookupKey != "my-explicit-key" {
+		t.Fatalf("key: got %q, want %q", putResp.LookupKey, "my-explicit-key")
 	}
 }
 
@@ -506,8 +506,8 @@ func TestList(t *testing.T) {
 	}
 	var resp ListResponse
 	json.NewDecoder(rec.Body).Decode(&resp)
-	if len(resp.Keys) != 3 {
-		t.Fatalf("expected 3 keys, got %d: %v", len(resp.Keys), resp.Keys)
+	if len(resp.LookupKeys) != 3 {
+		t.Fatalf("expected 3 keys, got %d: %v", len(resp.LookupKeys), resp.LookupKeys)
 	}
 
 	// List with prefix
@@ -516,8 +516,8 @@ func TestList(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	json.NewDecoder(rec.Body).Decode(&resp)
-	if len(resp.Keys) != 2 {
-		t.Fatalf("expected 2 keys with prefix=alp, got %d: %v", len(resp.Keys), resp.Keys)
+	if len(resp.LookupKeys) != 2 {
+		t.Fatalf("expected 2 keys with prefix=alp, got %d: %v", len(resp.LookupKeys), resp.LookupKeys)
 	}
 }
 
@@ -543,9 +543,9 @@ func TestHeadReturnsFingerprints(t *testing.T) {
 		t.Fatalf("HEAD: got %d, want %d", rec.Code, http.StatusOK)
 	}
 
-	fps := rec.Header().Get("X-Key-Fingerprints")
+	fps := rec.Header().Get("X-Encryption-Key-Fingerprints")
 	if fps == "" {
-		t.Fatal("expected X-Key-Fingerprints header")
+		t.Fatal("expected X-Encryption-Key-Fingerprints header")
 	}
 	parts := strings.Split(fps, ",")
 	if len(parts) != 2 {
