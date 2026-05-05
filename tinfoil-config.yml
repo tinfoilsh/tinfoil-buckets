@@ -10,7 +10,8 @@ containers:
       - R2_BUCKET_NAME: "tinfoil-bucket"
     secrets:
       - CLOUDFLARE_ACCOUNT_ID
-      - CLOUDFLARE_API_TOKEN
+      - R2_ACCESS_KEY_ID
+      - R2_SECRET_ACCESS_KEY
 
 shim:
   listen-port: 443

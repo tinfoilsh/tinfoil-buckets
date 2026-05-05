@@ -18,11 +18,11 @@ import (
 func main() {
 	cfg := config.Load()
 
-	if cfg.CloudflareAccountID == "" || cfg.CloudflareAPIToken == "" {
-		log.Fatal("CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN must be set")
+	if cfg.CloudflareAccountID == "" || cfg.R2AccessKeyID == "" || cfg.R2SecretAccessKey == "" {
+		log.Fatal("CLOUDFLARE_ACCOUNT_ID, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY must be set")
 	}
 
-	r2 := store.NewR2Store(cfg.CloudflareAccountID, cfg.CloudflareAPIToken, cfg.CloudflareAPIToken, cfg.R2BucketName)
+	r2 := store.NewR2Store(cfg.CloudflareAccountID, cfg.R2AccessKeyID, cfg.R2SecretAccessKey, cfg.R2BucketName)
 
 	bucketHandler := handler.NewBucketHandler(r2)
 

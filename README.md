@@ -166,18 +166,20 @@ Each key slot is 92 bytes: a SHA-256 fingerprint of the encryption key (32B) fol
 
 ## Configuration
 
-| Variable                | Default    | Description           |
-| ----------------------- | ---------- | --------------------- |
-| `CLOUDFLARE_ACCOUNT_ID` | required   | Cloudflare account ID |
-| `CLOUDFLARE_API_TOKEN`  | required   | Cloudflare API token  |
-| `R2_BUCKET_NAME`        | `tinfoil-bucket` | R2 bucket name  |
-| `LISTEN_ADDR`           | `:8089`    | HTTP listen address   |
+| Variable                | Default    | Description                |
+| ----------------------- | ---------- | -------------------------- |
+| `CLOUDFLARE_ACCOUNT_ID` | required   | Cloudflare account ID      |
+| `R2_ACCESS_KEY_ID`      | required   | R2 S3 API access key ID    |
+| `R2_SECRET_ACCESS_KEY`  | required   | R2 S3 API secret access key |
+| `R2_BUCKET_NAME`        | `tinfoil-bucket` | R2 bucket name       |
+| `LISTEN_ADDR`           | `:8089`    | HTTP listen address        |
 
 ## Running
 
 ```bash
 export CLOUDFLARE_ACCOUNT_ID="your-account-id"
-export CLOUDFLARE_API_TOKEN="your-api-token"
+export R2_ACCESS_KEY_ID="your-r2-access-key-id"
+export R2_SECRET_ACCESS_KEY="your-r2-secret-access-key"
 
 go run .
 ```
@@ -188,7 +190,8 @@ go run .
 docker build -t tinfoil-buckets .
 docker run -p 8089:8089 \
   -e CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID \
-  -e CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN \
+  -e R2_ACCESS_KEY_ID=$R2_ACCESS_KEY_ID \
+  -e R2_SECRET_ACCESS_KEY=$R2_SECRET_ACCESS_KEY \
   tinfoil-buckets
 ```
 
