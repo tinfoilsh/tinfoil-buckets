@@ -13,8 +13,8 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		CloudflareAccountID: os.Getenv("CLOUDFLARE_ACCOUNT_ID"),
-		R2AccessKeyID:       os.Getenv("R2_ACCESS_KEY_ID"),
-		R2SecretAccessKey:   os.Getenv("R2_SECRET_ACCESS_KEY"),
+		R2AccessKeyID:       os.Getenv("R2_TINFOIL_BUCKET_ACCESS_KEY_ID"),
+		R2SecretAccessKey:   os.Getenv("R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY"),
 		R2BucketName:        getEnv("R2_BUCKET_NAME", "tinfoil-bucket"),
 		ListenAddr:          getEnv("LISTEN_ADDR", ":8089"),
 	}
