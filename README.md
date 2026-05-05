@@ -106,6 +106,24 @@ DELETE /kv/{key}
 
 Returns `204 No Content`.
 
+### List keys
+
+```
+GET /kv/?prefix={prefix}&max_keys={n}
+```
+
+Both query params are optional. `max_keys` defaults to `100`.
+
+```bash
+curl 'http://localhost:8089/kv/?prefix=user-'
+```
+
+**Response:**
+
+```json
+{ "keys": ["user-alice", "user-bob"] }
+```
+
 ### Add an encryption key
 
 ```
@@ -143,19 +161,6 @@ GET /health
 ```
 
 Returns `{"status":"ok"}`.
-
-## MCP
-
-The server exposes an [MCP](https://modelcontextprotocol.io) endpoint at `POST /mcp` with the following tools:
-
-| Tool | Description |
-|------|-------------|
-| `kv_put` | Store a value encrypted with one or more keys |
-| `kv_get` | Retrieve and decrypt a value |
-| `kv_delete` | Delete a key |
-| `kv_list` | List keys matching a prefix |
-| `kv_add_key` | Add an encryption key slot to an existing value |
-| `kv_remove_key` | Remove an encryption key slot |
 
 ## Binary Envelope Format
 

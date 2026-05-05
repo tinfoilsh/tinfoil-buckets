@@ -482,6 +482,45 @@ func TestPutReturnsKeyInResponse(t *testing.T) {
 	}
 }
 
+func TestList(t *testing.T) {
+	h := setupHandler()
+	key := randomKeyB64(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	for _, name := range []string{"alpha", "alpine", "beta"} {
+		body, _ := json.Marshal(PutRequest{
+			Value:          value,
+			EncryptionKeys: []string{key},
+		})
+		req := httptest.NewRequest(http.MethodPut, "/kv/"+name, bytes.NewReader(body))
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	// List all
+	req := httptest.NewRequest(http.MethodGet, "/kv/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("LIST: got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp ListResponse
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if len(resp.Keys) != 3 {
+		t.Fatalf("expected 3 keys, got %d: %v", len(resp.Keys), resp.Keys)
+	}
+
+	// List with prefix
+	req = httptest.NewRequest(http.MethodGet, "/kv/?prefix=alp", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if len(resp.Keys) != 2 {
+		t.Fatalf("expected 2 keys with prefix=alp, got %d: %v", len(resp.Keys), resp.Keys)
+	}
+}
+
 func TestHeadReturnsFingerprints(t *testing.T) {
 	h := setupHandler()
 	key1 := randomKeyB64(t)
