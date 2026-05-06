@@ -646,6 +646,34 @@ func TestStorageKeyUserPrefix(t *testing.T) {
 	}
 }
 
+func TestStorageKeyV0OrgPrefix(t *testing.T) {
+	// v0 envelopes must land under the same tenant-namespaced layout as v1.
+	// v0 is kept for a legacy caller's wire format; the storage-key layer
+	// is format-blind, but assert it explicitly so a regression there is
+	// caught for both formats.
+	m := newMockS3()
+	s := store.NewR2StoreWithClient(m, "test")
+	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}})
+
+	key := randomKeyB64(t)
+	tok := randomAccessToken(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+	format := 0
+
+	body, _ := json.Marshal(PutRequest{Value: value, EncryptionKey: key, Format: &format})
+	req := authReq(http.MethodPut, "/items/"+tok, body)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT v0: got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	want := "org/org_y/" + tok
+	if _, ok := m.objects[want]; !ok {
+		t.Fatalf("expected R2 key %q, got keys: %v", want, mapKeys(m.objects))
+	}
+}
+
 func TestStorageKeyWithSegments(t *testing.T) {
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
