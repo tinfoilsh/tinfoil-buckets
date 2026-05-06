@@ -22,12 +22,9 @@ func main() {
 	if cfg.CloudflareAccountID == "" || cfg.R2AccessKeyID == "" || cfg.R2SecretAccessKey == "" {
 		log.Fatal("CLOUDFLARE_ACCOUNT_ID, R2_TINFOIL_BUCKET_ACCESS_KEY_ID, and R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY must be set")
 	}
-	if cfg.ControlplaneURL == "" {
-		log.Fatal("CONTROLPLANE_URL must be set")
-	}
 
 	r2 := store.NewR2Store(cfg.CloudflareAccountID, cfg.R2AccessKeyID, cfg.R2SecretAccessKey, cfg.R2BucketName)
-	resolver := auth.NewHTTPResolver(cfg.ControlplaneURL)
+	resolver := auth.NewHTTPResolver(cfg.ControlPlaneURL)
 
 	itemHandler := handler.NewItemHandler(r2, resolver)
 
