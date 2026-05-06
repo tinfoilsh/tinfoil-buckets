@@ -35,10 +35,12 @@ type PutRequest struct {
 	Format         *int     `json:"format,omitempty"`          // 0 or 1 (default: 1)
 }
 
+// PutResponse confirms a successful write. For v1 it also surfaces the
+// stored version and original creation timestamp; v0 has no metadata, so
+// the body is empty (status 200 alone is the confirmation).
 type PutResponse struct {
-	AccessToken string `json:"access_token"`
-	Version     uint64 `json:"version,omitempty"`
-	CreatedAt   string `json:"created_at,omitempty"`
+	Version   uint64 `json:"version,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 // POST /items/{accessToken}/encryption-keys
@@ -125,38 +127,63 @@ func isValidSegment(s string) bool {
 	return true
 }
 
-// storageKey builds the R2 object key from an identity and caller-supplied
-// path segments. Org-scoped keys win when an org is present; otherwise the
-// owning user namespace is used. The two namespaces are disjoint.
-func storageKey(id auth.Identity, segments []string) string {
+// storageKey builds the R2 object key from an identity, caller-supplied
+// path segments, and the accessToken (URL handle). Org-scoped keys win
+// when an org is present; otherwise the owning user namespace is used.
+// The two namespaces are disjoint. The accessToken is the leaf of the
+// key — it lives under the tenant + segment prefix so that callers can
+// have many distinct items addressed by their own identifier.
+func storageKey(id auth.Identity, segments []string, accessToken string) string {
 	var prefix string
 	if id.OrgID != "" {
 		prefix = "org/" + id.OrgID
 	} else {
 		prefix = "user/" + id.UserID
 	}
-	if len(segments) == 0 {
-		return prefix
-	}
-	return prefix + "/" + strings.Join(segments, "/")
+	parts := make([]string, 0, 2+len(segments))
+	parts = append(parts, prefix)
+	parts = append(parts, segments...)
+	parts = append(parts, accessToken)
+	return strings.Join(parts, "/")
 }
 
-// resolve performs the per-request identity lookup and segment parsing.
-// Returns the namespaced R2 storage key, the original accessToken (for
-// echoing back in responses), or an HTTP-mapped error already written to
-// the response.
+// bearerToken extracts the API key from an Authorization header. Returns
+// an error if the header is missing or malformed.
+func bearerToken(h string) (string, error) {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(h, prefix) {
+		return "", fmt.Errorf("missing or invalid Authorization header")
+	}
+	tok := strings.TrimSpace(h[len(prefix):])
+	if tok == "" {
+		return "", fmt.Errorf("Authorization header has empty bearer token")
+	}
+	return tok, nil
+}
+
+// resolve performs the per-request identity lookup, segment parsing, and
+// storage-key construction. The API key is read from the Authorization
+// header and forwarded to controlplane; the accessToken from the URL is
+// only used as the leaf of the storage key. Returns the namespaced R2
+// storage key, or false after writing an HTTP error.
 func (h *ItemHandler) resolve(w http.ResponseWriter, r *http.Request, accessToken string) (string, bool) {
+	apiKey, err := bearerToken(r.Header.Get("Authorization"))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return "", false
+	}
+
 	segments, err := validatePathSegments(r.Header.Get(pathHeader))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return "", false
 	}
 
-	id, err := h.resolver.Resolve(r.Context(), accessToken)
+	id, err := h.resolver.Resolve(r.Context(), apiKey)
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrInvalidToken):
-			writeError(w, http.StatusUnauthorized, "invalid access token")
+			writeError(w, http.StatusUnauthorized, "invalid api key")
 		case errors.Is(err, auth.ErrUpstreamUnavailable):
 			log.Errorf("identity service unavailable: %v", err)
 			writeError(w, http.StatusBadGateway, "identity service unavailable")
@@ -166,7 +193,7 @@ func (h *ItemHandler) resolve(w http.ResponseWriter, r *http.Request, accessToke
 		}
 		return "", false
 	}
-	return storageKey(id, segments), true
+	return storageKey(id, segments, accessToken), true
 }
 
 func (h *ItemHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +239,7 @@ func (h *ItemHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodPut:
-		h.handlePut(w, r, accessToken, key)
+		h.handlePut(w, r, key)
 	case http.MethodGet:
 		h.handleGet(w, r, key)
 	case http.MethodHead:
@@ -224,7 +251,7 @@ func (h *ItemHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, accessToken, key string) {
+func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, key string) {
 	var req PutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -242,7 +269,7 @@ func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, accessTo
 		format = uint8(*req.Format)
 	}
 
-	resp := PutResponse{AccessToken: accessToken}
+	var resp PutResponse
 	var blob []byte
 
 	switch format {
