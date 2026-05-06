@@ -83,13 +83,16 @@ func validateAccessToken(accessToken string) error {
 	if n := len(accessToken); n < minAccessTokenLength || n > maxAccessTokenLength {
 		return fmt.Errorf("access_token must be between %d and %d characters", minAccessTokenLength, maxAccessTokenLength)
 	}
+	if !isValidSegment(accessToken) {
+		return fmt.Errorf("access_token contains invalid characters (allowed: A-Z, a-z, 0-9, '_', '-')")
+	}
 	return nil
 }
 
 // validatePathSegments parses the X-Item-Path header. Empty header returns
 // nil, nil (caller is operating at the tenant root). Otherwise: up to
 // maxPathSegments slash-separated segments, each 1..maxPathSegmentLength
-// chars, charset [A-Za-z0-9._-].
+// chars, charset [A-Za-z0-9_-].
 func validatePathSegments(header string) ([]string, error) {
 	header = strings.TrimSpace(header)
 	if header == "" {
@@ -107,19 +110,20 @@ func validatePathSegments(header string) ([]string, error) {
 			return nil, fmt.Errorf("X-Item-Path segment %d exceeds %d characters", i, maxPathSegmentLength)
 		}
 		if !isValidSegment(seg) {
-			return nil, fmt.Errorf("X-Item-Path segment %d contains invalid characters (allowed: A-Z, a-z, 0-9, '.', '_', '-')", i)
+			return nil, fmt.Errorf("X-Item-Path segment %d contains invalid characters (allowed: A-Z, a-z, 0-9, '_', '-')", i)
 		}
 	}
 	return segments, nil
 }
 
+// [A-Za-z0-9_-]
 func isValidSegment(s string) bool {
 	for _, r := range s {
 		switch {
 		case r >= 'A' && r <= 'Z':
 		case r >= 'a' && r <= 'z':
 		case r >= '0' && r <= '9':
-		case r == '.' || r == '_' || r == '-':
+		case r == '_' || r == '-':
 		default:
 			return false
 		}
@@ -566,4 +570,3 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, ErrorResponse{Error: msg})
 }
-

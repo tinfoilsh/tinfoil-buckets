@@ -508,6 +508,35 @@ func TestPutWithLongAccessTokenRejected(t *testing.T) {
 	}
 }
 
+func TestPutWithInvalidAccessTokenCharsRejected(t *testing.T) {
+	h, _ := setupHandler()
+	key := randomKeyB64(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	// Each token is within the length bounds but contains a character
+	// outside the allowed charset. The router strips /items/ and any
+	// /encryption-keys suffix; everything else hits validateAccessToken,
+	// which must reject these so they can't end up as R2 key fragments.
+	cases := map[string]string{
+		"slash": strings.Repeat("a", 20) + "/" + strings.Repeat("b", 19),
+		"tilde": strings.Repeat("a", 20) + "~" + strings.Repeat("b", 19),
+		"comma": strings.Repeat("a", 20) + "," + strings.Repeat("b", 19),
+		"plus":  strings.Repeat("a", 20) + "+" + strings.Repeat("b", 19),
+		"dot":   strings.Repeat("a", 20) + "." + strings.Repeat("b", 19),
+	}
+	for name, tok := range cases {
+		t.Run(name, func(t *testing.T) {
+			body, _ := json.Marshal(PutRequest{Value: value, EncryptionKeys: []string{key}})
+			req := authReq(http.MethodPut, "/items/"+tok, body)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("got %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestPutResponseHasNoAccessToken(t *testing.T) {
 	h, _ := setupHandler()
 	key := randomKeyB64(t)
