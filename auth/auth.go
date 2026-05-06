@@ -1,7 +1,7 @@
-// Package auth resolves accessTokens (controlplane API keys) to the
-// owning Clerk user or organization by calling controlplane's
-// /api/shim/identity endpoint. The returned identity is used by the
-// item handler to namespace R2 storage keys per tenant.
+// Package auth resolves controlplane API keys to the owning Clerk user
+// or organization by calling controlplane's /api/shim/identity endpoint.
+// The returned identity is used by the item handler to namespace R2
+// storage keys per tenant.
 package auth
 
 import (
@@ -16,22 +16,22 @@ import (
 	"time"
 )
 
-// Identity is the resolved owner of an accessToken. Exactly one of OrgID
-// or UserID is populated downstream when picking the storage prefix —
-// org wins when present, user is the fallback.
+// Identity is the resolved owner of an API key. Exactly one of OrgID or
+// UserID is populated downstream when picking the storage prefix — org
+// wins when present, user is the fallback.
 type Identity struct {
 	UserID string `json:"user_id"`
 	OrgID  string `json:"org_id,omitempty"`
 }
 
-// Resolver looks up an accessToken's owning identity.
+// Resolver looks up an API key's owning identity.
 type Resolver interface {
-	Resolve(ctx context.Context, accessToken string) (Identity, error)
+	Resolve(ctx context.Context, apiKey string) (Identity, error)
 }
 
-// ErrInvalidToken is returned when controlplane rejects the accessToken
+// ErrInvalidToken is returned when controlplane rejects the API key
 // (HTTP 401). Callers should map this to 401 for the kvstore client.
-var ErrInvalidToken = errors.New("invalid access token")
+var ErrInvalidToken = errors.New("invalid api key")
 
 // ErrUpstreamUnavailable is returned for transport errors or non-401
 // non-2xx responses from controlplane. Callers should map this to 502.
@@ -54,11 +54,11 @@ func NewHTTPResolver(baseURL string) *HTTPResolver {
 }
 
 type identityRequest struct {
-	Token string `json:"token"`
+	APIKey string `json:"api_key"`
 }
 
-func (r *HTTPResolver) Resolve(ctx context.Context, accessToken string) (Identity, error) {
-	body, err := json.Marshal(identityRequest{Token: accessToken})
+func (r *HTTPResolver) Resolve(ctx context.Context, apiKey string) (Identity, error) {
+	body, err := json.Marshal(identityRequest{APIKey: apiKey})
 	if err != nil {
 		return Identity{}, fmt.Errorf("marshal identity request: %w", err)
 	}
