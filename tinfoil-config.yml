@@ -8,6 +8,7 @@ containers:
     image: "ghcr.io/tinfoilsh/tinfoil-buckets@sha256:48b15f42f7133db2edfd3bd60fac759ed2aafa683096022b4beb33484d74be23" # v0.0.4
     env:
       - R2_BUCKET_NAME: "tinfoil-bucket"
+      - CONTROL_PLANE_URL: "https://api.tinfoil.sh"
     secrets:
       - CLOUDFLARE_ACCOUNT_ID
       - R2_TINFOIL_BUCKET_ACCESS_KEY_ID
