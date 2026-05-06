@@ -10,6 +10,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
+	"github.com/tinfoilsh/tinfoil-buckets/auth"
 	"github.com/tinfoilsh/tinfoil-buckets/config"
 	"github.com/tinfoilsh/tinfoil-buckets/handler"
 	"github.com/tinfoilsh/tinfoil-buckets/store"
@@ -21,10 +22,14 @@ func main() {
 	if cfg.CloudflareAccountID == "" || cfg.R2AccessKeyID == "" || cfg.R2SecretAccessKey == "" {
 		log.Fatal("CLOUDFLARE_ACCOUNT_ID, R2_TINFOIL_BUCKET_ACCESS_KEY_ID, and R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY must be set")
 	}
+	if cfg.ControlplaneURL == "" {
+		log.Fatal("CONTROLPLANE_URL must be set")
+	}
 
 	r2 := store.NewR2Store(cfg.CloudflareAccountID, cfg.R2AccessKeyID, cfg.R2SecretAccessKey, cfg.R2BucketName)
+	resolver := auth.NewHTTPResolver(cfg.ControlplaneURL)
 
-	itemHandler := handler.NewItemHandler(r2)
+	itemHandler := handler.NewItemHandler(r2, resolver)
 
 	mux := http.NewServeMux()
 	mux.Handle("/items/", itemHandler)

@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
+	"github.com/tinfoilsh/tinfoil-buckets/auth"
 	"github.com/tinfoilsh/tinfoil-buckets/store"
 )
 
@@ -55,6 +56,20 @@ func (m *mockS3) HeadObject(_ context.Context, input *s3.HeadObjectInput, _ ...f
 	return &s3.HeadObjectOutput{}, nil
 }
 
+// stubResolver returns a fixed identity for any token. err, when set,
+// short-circuits Resolve before consulting identity.
+type stubResolver struct {
+	identity auth.Identity
+	err      error
+}
+
+func (s *stubResolver) Resolve(_ context.Context, _ string) (auth.Identity, error) {
+	if s.err != nil {
+		return auth.Identity{}, s.err
+	}
+	return s.identity, nil
+}
+
 func randomKeyB64(t *testing.T) string {
 	t.Helper()
 	key := make([]byte, 32)
@@ -62,24 +77,31 @@ func randomKeyB64(t *testing.T) string {
 	return base64.StdEncoding.EncodeToString(key)
 }
 
-// randomLookupKey returns a 36-char hex string suitable for use as a lookup_key
-// (satisfies minLookupKeyLength=36 and contains no URL-special chars).
-func randomLookupKey(t *testing.T) string {
+// randomAccessToken returns a 36-char hex string suitable for use as an
+// accessToken (satisfies minAccessTokenLength=36 and contains no
+// URL-special chars).
+func randomAccessToken(t *testing.T) string {
 	t.Helper()
 	b := make([]byte, 18)
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }
 
-func setupHandler() *ItemHandler {
+func setupHandler() (*ItemHandler, *mockS3) {
+	m := newMockS3()
+	s := store.NewR2StoreWithClient(m, "test")
+	return NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_test"}}), m
+}
+
+func setupHandlerWithResolver(resolver auth.Resolver) *ItemHandler {
 	s := store.NewR2StoreWithClient(newMockS3(), "test")
-	return NewItemHandler(s)
+	return NewItemHandler(s, resolver)
 }
 
 func TestPutAndGet(t *testing.T) {
-	h := setupHandler()
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
-	lk := randomLookupKey(t)
+	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("hello world"))
 
 	// PUT
@@ -87,7 +109,7 @@ func TestPutAndGet(t *testing.T) {
 		Value:          value,
 		EncryptionKeys: []string{key},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/items/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -102,7 +124,7 @@ func TestPutAndGet(t *testing.T) {
 	}
 
 	// GET
-	req = httptest.NewRequest(http.MethodGet, "/items/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/items/"+tok, nil)
 	req.Header.Set("X-Encryption-Key", key)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -119,10 +141,10 @@ func TestPutAndGet(t *testing.T) {
 }
 
 func TestGetNotFound(t *testing.T) {
-	h := setupHandler()
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/items/"+randomLookupKey(t), nil)
+	req := httptest.NewRequest(http.MethodGet, "/items/"+randomAccessToken(t), nil)
 	req.Header.Set("X-Encryption-Key", key)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -133,21 +155,21 @@ func TestGetNotFound(t *testing.T) {
 }
 
 func TestGetWrongKey(t *testing.T) {
-	h := setupHandler()
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
 	wrongKey := randomKeyB64(t)
-	lk := randomLookupKey(t)
+	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("secret"))
 
 	body, _ := json.Marshal(PutRequest{
 		Value:          value,
 		EncryptionKeys: []string{key},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/items/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	req = httptest.NewRequest(http.MethodGet, "/items/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/items/"+tok, nil)
 	req.Header.Set("X-Encryption-Key", wrongKey)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -158,9 +180,9 @@ func TestGetWrongKey(t *testing.T) {
 }
 
 func TestVersionIncrement(t *testing.T) {
-	h := setupHandler()
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
-	lk := randomLookupKey(t)
+	tok := randomAccessToken(t)
 
 	for i := 1; i <= 3; i++ {
 		value := base64.StdEncoding.EncodeToString([]byte("v" + string(rune('0'+i))))
@@ -168,7 +190,7 @@ func TestVersionIncrement(t *testing.T) {
 			Value:          value,
 			EncryptionKeys: []string{key},
 		})
-		req := httptest.NewRequest(http.MethodPut, "/items/"+lk, bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 
@@ -181,20 +203,20 @@ func TestVersionIncrement(t *testing.T) {
 }
 
 func TestHead(t *testing.T) {
-	h := setupHandler()
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
-	lk := randomLookupKey(t)
+	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("data"))
 
 	body, _ := json.Marshal(PutRequest{
 		Value:          value,
 		EncryptionKeys: []string{key},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/items/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	req = httptest.NewRequest(http.MethodHead, "/items/"+lk, nil)
+	req = httptest.NewRequest(http.MethodHead, "/items/"+tok, nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -210,20 +232,20 @@ func TestHead(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	h := setupHandler()
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
-	lk := randomLookupKey(t)
+	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("data"))
 
 	body, _ := json.Marshal(PutRequest{
 		Value:          value,
 		EncryptionKeys: []string{key},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/items/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	req = httptest.NewRequest(http.MethodDelete, "/items/"+lk, nil)
+	req = httptest.NewRequest(http.MethodDelete, "/items/"+tok, nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -231,7 +253,7 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("DELETE: got %d, want %d", rec.Code, http.StatusNoContent)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/items/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/items/"+tok, nil)
 	req.Header.Set("X-Encryption-Key", key)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -242,10 +264,10 @@ func TestDelete(t *testing.T) {
 }
 
 func TestAddAndRemoveKey(t *testing.T) {
-	h := setupHandler()
+	h, _ := setupHandler()
 	key1 := randomKeyB64(t)
 	key2 := randomKeyB64(t)
-	lk := randomLookupKey(t)
+	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("shared secret"))
 
 	// PUT with key1
@@ -253,13 +275,13 @@ func TestAddAndRemoveKey(t *testing.T) {
 		Value:          value,
 		EncryptionKeys: []string{key1},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/items/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	// Add key2
 	body, _ = json.Marshal(AddKeyRequest{ExistingEncryptionKey: key1, NewEncryptionKey: key2})
-	req = httptest.NewRequest(http.MethodPost, "/items/"+lk+"/encryption-keys", bytes.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/items/"+tok+"/encryption-keys", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -268,7 +290,7 @@ func TestAddAndRemoveKey(t *testing.T) {
 	}
 
 	// GET with key2
-	req = httptest.NewRequest(http.MethodGet, "/items/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/items/"+tok, nil)
 	req.Header.Set("X-Encryption-Key", key2)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -279,7 +301,7 @@ func TestAddAndRemoveKey(t *testing.T) {
 
 	// Remove key1
 	body, _ = json.Marshal(RemoveKeyRequest{ExistingEncryptionKey: key2, RemoveEncryptionKey: key1})
-	req = httptest.NewRequest(http.MethodDelete, "/items/"+lk+"/encryption-keys", bytes.NewReader(body))
+	req = httptest.NewRequest(http.MethodDelete, "/items/"+tok+"/encryption-keys", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -288,7 +310,7 @@ func TestAddAndRemoveKey(t *testing.T) {
 	}
 
 	// key1 should no longer work
-	req = httptest.NewRequest(http.MethodGet, "/items/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/items/"+tok, nil)
 	req.Header.Set("X-Encryption-Key", key1)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -299,9 +321,9 @@ func TestAddAndRemoveKey(t *testing.T) {
 }
 
 func TestV0PutAndGet(t *testing.T) {
-	h := setupHandler()
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
-	lk := randomLookupKey(t)
+	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("v0 data"))
 	format := 0
 
@@ -310,7 +332,7 @@ func TestV0PutAndGet(t *testing.T) {
 		EncryptionKey: key,
 		Format:        &format,
 	})
-	req := httptest.NewRequest(http.MethodPut, "/items/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -319,7 +341,7 @@ func TestV0PutAndGet(t *testing.T) {
 	}
 
 	// GET with same key
-	req = httptest.NewRequest(http.MethodGet, "/items/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/items/"+tok, nil)
 	req.Header.Set("X-Encryption-Key", key)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -339,10 +361,10 @@ func TestV0PutAndGet(t *testing.T) {
 }
 
 func TestV0WrongKey(t *testing.T) {
-	h := setupHandler()
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
 	wrongKey := randomKeyB64(t)
-	lk := randomLookupKey(t)
+	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("secret"))
 	format := 0
 
@@ -351,11 +373,11 @@ func TestV0WrongKey(t *testing.T) {
 		EncryptionKey: key,
 		Format:        &format,
 	})
-	req := httptest.NewRequest(http.MethodPut, "/items/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	req = httptest.NewRequest(http.MethodGet, "/items/"+lk, nil)
+	req = httptest.NewRequest(http.MethodGet, "/items/"+tok, nil)
 	req.Header.Set("X-Encryption-Key", wrongKey)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -366,10 +388,10 @@ func TestV0WrongKey(t *testing.T) {
 }
 
 func TestV0AddKeyRejected(t *testing.T) {
-	h := setupHandler()
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
 	newKey := randomKeyB64(t)
-	lk := randomLookupKey(t)
+	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("data"))
 	format := 0
 
@@ -378,12 +400,12 @@ func TestV0AddKeyRejected(t *testing.T) {
 		EncryptionKey: key,
 		Format:        &format,
 	})
-	req := httptest.NewRequest(http.MethodPut, "/items/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	body, _ = json.Marshal(AddKeyRequest{ExistingEncryptionKey: key, NewEncryptionKey: newKey})
-	req = httptest.NewRequest(http.MethodPost, "/items/"+lk+"/encryption-keys", bytes.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/items/"+tok+"/encryption-keys", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -393,9 +415,9 @@ func TestV0AddKeyRejected(t *testing.T) {
 }
 
 func TestV0HeadFormat(t *testing.T) {
-	h := setupHandler()
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
-	lk := randomLookupKey(t)
+	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("data"))
 	format := 0
 
@@ -404,11 +426,11 @@ func TestV0HeadFormat(t *testing.T) {
 		EncryptionKey: key,
 		Format:        &format,
 	})
-	req := httptest.NewRequest(http.MethodPut, "/items/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	req = httptest.NewRequest(http.MethodHead, "/items/"+lk, nil)
+	req = httptest.NewRequest(http.MethodHead, "/items/"+tok, nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -423,8 +445,8 @@ func TestV0HeadFormat(t *testing.T) {
 	}
 }
 
-func TestPutWithoutLookupKeyRejected(t *testing.T) {
-	h := setupHandler()
+func TestPutWithoutAccessTokenRejected(t *testing.T) {
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
 	value := base64.StdEncoding.EncodeToString([]byte("data"))
 
@@ -437,12 +459,12 @@ func TestPutWithoutLookupKeyRejected(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("PUT without lookup_key: got %d, want %d", rec.Code, http.StatusBadRequest)
+		t.Fatalf("PUT without access_token: got %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
-func TestPutWithShortLookupKeyRejected(t *testing.T) {
-	h := setupHandler()
+func TestPutWithShortAccessTokenRejected(t *testing.T) {
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
 	value := base64.StdEncoding.EncodeToString([]byte("data"))
 
@@ -456,47 +478,66 @@ func TestPutWithShortLookupKeyRejected(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("PUT with short lookup_key: got %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+		t.Fatalf("PUT with short access_token: got %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 
-func TestPutReturnsKeyInResponse(t *testing.T) {
-	h := setupHandler()
+func TestPutWithLongAccessTokenRejected(t *testing.T) {
+	h, _ := setupHandler()
 	key := randomKeyB64(t)
-	lk := randomLookupKey(t)
 	value := base64.StdEncoding.EncodeToString([]byte("data"))
 
 	body, _ := json.Marshal(PutRequest{
 		Value:          value,
 		EncryptionKeys: []string{key},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/items/"+lk, bytes.NewReader(body))
+	// 77 chars — one over the 76-char maximum
+	req := httptest.NewRequest(http.MethodPut, "/items/"+strings.Repeat("a", 77), bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT with long access_token: got %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestPutReturnsAccessTokenInResponse(t *testing.T) {
+	h, _ := setupHandler()
+	key := randomKeyB64(t)
+	tok := randomAccessToken(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	body, _ := json.Marshal(PutRequest{
+		Value:          value,
+		EncryptionKeys: []string{key},
+	})
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	var putResp PutResponse
 	json.NewDecoder(rec.Body).Decode(&putResp)
-	if putResp.LookupKey != lk {
-		t.Fatalf("lookup_key: got %q, want %q", putResp.LookupKey, lk)
+	if putResp.AccessToken != tok {
+		t.Fatalf("access_token: got %q, want %q", putResp.AccessToken, tok)
 	}
 }
 
 func TestHeadReturnsFingerprints(t *testing.T) {
-	h := setupHandler()
+	h, _ := setupHandler()
 	key1 := randomKeyB64(t)
 	key2 := randomKeyB64(t)
-	lk := randomLookupKey(t)
+	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("data"))
 
 	body, _ := json.Marshal(PutRequest{
 		Value:          value,
 		EncryptionKeys: []string{key1, key2},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/items/"+lk, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	req = httptest.NewRequest(http.MethodHead, "/items/"+lk, nil)
+	req = httptest.NewRequest(http.MethodHead, "/items/"+tok, nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -518,4 +559,210 @@ func TestHeadReturnsFingerprints(t *testing.T) {
 			t.Fatalf("fingerprint %d: expected 64 hex chars, got %d: %q", i, len(fp), fp)
 		}
 	}
+}
+
+func TestStorageKeyOrgPrefix(t *testing.T) {
+	m := newMockS3()
+	s := store.NewR2StoreWithClient(m, "test")
+	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}})
+
+	key := randomKeyB64(t)
+	tok := randomAccessToken(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	body, _ := json.Marshal(PutRequest{Value: value, EncryptionKeys: []string{key}})
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT: got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	if _, ok := m.objects["org/org_y"]; !ok {
+		t.Fatalf("expected R2 key %q, got keys: %v", "org/org_y", mapKeys(m.objects))
+	}
+}
+
+func TestStorageKeyUserPrefix(t *testing.T) {
+	m := newMockS3()
+	s := store.NewR2StoreWithClient(m, "test")
+	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x"}})
+
+	key := randomKeyB64(t)
+	tok := randomAccessToken(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	body, _ := json.Marshal(PutRequest{Value: value, EncryptionKeys: []string{key}})
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT: got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	if _, ok := m.objects["user/user_x"]; !ok {
+		t.Fatalf("expected R2 key %q, got keys: %v", "user/user_x", mapKeys(m.objects))
+	}
+}
+
+func TestStorageKeyWithSegments(t *testing.T) {
+	m := newMockS3()
+	s := store.NewR2StoreWithClient(m, "test")
+	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}})
+
+	key := randomKeyB64(t)
+	tok := randomAccessToken(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	body, _ := json.Marshal(PutRequest{Value: value, EncryptionKeys: []string{key}})
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
+	req.Header.Set("X-Item-Path", "customers/abc/profile")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT: got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	want := "org/org_y/customers/abc/profile"
+	if _, ok := m.objects[want]; !ok {
+		t.Fatalf("expected R2 key %q, got keys: %v", want, mapKeys(m.objects))
+	}
+}
+
+func TestSegmentsIsolateNamespaces(t *testing.T) {
+	// Same accessToken, same encryption key, two different X-Item-Path
+	// values must produce two distinct items.
+	m := newMockS3()
+	s := store.NewR2StoreWithClient(m, "test")
+	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x"}})
+
+	encKey := randomKeyB64(t)
+	tok := randomAccessToken(t)
+
+	for i, segs := range []string{"a", "b"} {
+		value := base64.StdEncoding.EncodeToString([]byte{byte('A' + i)})
+		body, _ := json.Marshal(PutRequest{Value: value, EncryptionKeys: []string{encKey}})
+		req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
+		req.Header.Set("X-Item-Path", segs)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT %s: got %d", segs, rec.Code)
+		}
+	}
+
+	if _, ok := m.objects["user/user_x/a"]; !ok {
+		t.Fatalf("expected key user/user_x/a")
+	}
+	if _, ok := m.objects["user/user_x/b"]; !ok {
+		t.Fatalf("expected key user/user_x/b")
+	}
+}
+
+func TestRejectTooManySegments(t *testing.T) {
+	h, _ := setupHandler()
+	key := randomKeyB64(t)
+	tok := randomAccessToken(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	body, _ := json.Marshal(PutRequest{Value: value, EncryptionKeys: []string{key}})
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
+	req.Header.Set("X-Item-Path", "a/b/c/d/e") // 5 segments
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestRejectSegmentTooLong(t *testing.T) {
+	h, _ := setupHandler()
+	key := randomKeyB64(t)
+	tok := randomAccessToken(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	body, _ := json.Marshal(PutRequest{Value: value, EncryptionKeys: []string{key}})
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
+	req.Header.Set("X-Item-Path", strings.Repeat("a", 37))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestRejectInvalidSegmentChars(t *testing.T) {
+	h, _ := setupHandler()
+	key := randomKeyB64(t)
+	tok := randomAccessToken(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	body, _ := json.Marshal(PutRequest{Value: value, EncryptionKeys: []string{key}})
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
+	req.Header.Set("X-Item-Path", "abc def") // space disallowed
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestUUIDLikeSegmentAccepted(t *testing.T) {
+	h, _ := setupHandler()
+	key := randomKeyB64(t)
+	tok := randomAccessToken(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	body, _ := json.Marshal(PutRequest{Value: value, EncryptionKeys: []string{key}})
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
+	req.Header.Set("X-Item-Path", "550e8400-e29b-41d4-a716-446655440000") // 36-char uuid
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestInvalidTokenReturns401(t *testing.T) {
+	h := setupHandlerWithResolver(&stubResolver{err: auth.ErrInvalidToken})
+	key := randomKeyB64(t)
+	tok := randomAccessToken(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	body, _ := json.Marshal(PutRequest{Value: value, EncryptionKeys: []string{key}})
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestUpstreamUnavailableReturns502(t *testing.T) {
+	h := setupHandlerWithResolver(&stubResolver{err: auth.ErrUpstreamUnavailable})
+	key := randomKeyB64(t)
+	tok := randomAccessToken(t)
+	value := base64.StdEncoding.EncodeToString([]byte("data"))
+
+	body, _ := json.Marshal(PutRequest{Value: value, EncryptionKeys: []string{key}})
+	req := httptest.NewRequest(http.MethodPut, "/items/"+tok, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("got %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
+func mapKeys(m map[string][]byte) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }

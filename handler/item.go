@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,19 +13,21 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
+	"github.com/tinfoilsh/tinfoil-buckets/auth"
 	"github.com/tinfoilsh/tinfoil-buckets/crypto"
 	"github.com/tinfoilsh/tinfoil-buckets/store"
 )
 
 type ItemHandler struct {
-	store *store.R2Store
+	store    *store.R2Store
+	resolver auth.Resolver
 }
 
-func NewItemHandler(store *store.R2Store) *ItemHandler {
-	return &ItemHandler{store: store}
+func NewItemHandler(store *store.R2Store, resolver auth.Resolver) *ItemHandler {
+	return &ItemHandler{store: store, resolver: resolver}
 }
 
-// PUT /items/{lookup_key}
+// PUT /items/{accessToken}
 type PutRequest struct {
 	Value          string   `json:"value"`                     // base64-encoded
 	EncryptionKeys []string `json:"encryption_keys,omitempty"` // base64-encoded 32-byte keys (required for v1)
@@ -33,24 +36,24 @@ type PutRequest struct {
 }
 
 type PutResponse struct {
-	LookupKey string `json:"lookup_key"`
-	Version   uint64 `json:"version,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
+	AccessToken string `json:"access_token"`
+	Version     uint64 `json:"version,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
 }
 
-// POST /items/{lookup_key}/encryption-keys
+// POST /items/{accessToken}/encryption-keys
 type AddKeyRequest struct {
 	ExistingEncryptionKey string `json:"existing_encryption_key"` // base64
 	NewEncryptionKey      string `json:"new_encryption_key"`      // base64
 }
 
-// DELETE /items/{lookup_key}/encryption-keys
+// DELETE /items/{accessToken}/encryption-keys
 type RemoveKeyRequest struct {
 	ExistingEncryptionKey string `json:"existing_encryption_key"` // base64
 	RemoveEncryptionKey   string `json:"remove_encryption_key"`   // base64
 }
 
-// GET /items/{lookup_key} response
+// GET /items/{accessToken} response
 type GetResponse struct {
 	Value     string `json:"value"`                // base64-encoded
 	Version   uint64 `json:"version,omitempty"`    // v1 only
@@ -63,18 +66,107 @@ type ErrorResponse struct {
 }
 
 const (
-	minLookupKeyLength = 36
-	routePrefix        = "/items/"
+	minAccessTokenLength = 36
+	maxAccessTokenLength = 76
+	maxPathSegments      = 4
+	maxPathSegmentLength = 36
+	routePrefix          = "/items/"
+	pathHeader           = "X-Item-Path"
 )
 
-func validateLookupKey(lookupKey string) error {
-	if lookupKey == "" {
-		return fmt.Errorf("lookup_key is required")
+func validateAccessToken(accessToken string) error {
+	if accessToken == "" {
+		return fmt.Errorf("access_token is required")
 	}
-	if len(lookupKey) < minLookupKeyLength {
-		return fmt.Errorf("lookup_key must be at least %d characters", minLookupKeyLength)
+	if n := len(accessToken); n < minAccessTokenLength || n > maxAccessTokenLength {
+		return fmt.Errorf("access_token must be between %d and %d characters", minAccessTokenLength, maxAccessTokenLength)
 	}
 	return nil
+}
+
+// validatePathSegments parses the X-Item-Path header. Empty header returns
+// nil, nil (caller is operating at the tenant root). Otherwise: up to
+// maxPathSegments slash-separated segments, each 1..maxPathSegmentLength
+// chars, charset [A-Za-z0-9._-].
+func validatePathSegments(header string) ([]string, error) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return nil, nil
+	}
+	segments := strings.Split(header, "/")
+	if len(segments) > maxPathSegments {
+		return nil, fmt.Errorf("X-Item-Path may contain at most %d segments", maxPathSegments)
+	}
+	for i, seg := range segments {
+		if seg == "" {
+			return nil, fmt.Errorf("X-Item-Path segment %d is empty", i)
+		}
+		if len(seg) > maxPathSegmentLength {
+			return nil, fmt.Errorf("X-Item-Path segment %d exceeds %d characters", i, maxPathSegmentLength)
+		}
+		if !isValidSegment(seg) {
+			return nil, fmt.Errorf("X-Item-Path segment %d contains invalid characters (allowed: A-Z, a-z, 0-9, '.', '_', '-')", i)
+		}
+	}
+	return segments, nil
+}
+
+func isValidSegment(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// storageKey builds the R2 object key from an identity and caller-supplied
+// path segments. Org-scoped keys win when an org is present; otherwise the
+// owning user namespace is used. The two namespaces are disjoint.
+func storageKey(id auth.Identity, segments []string) string {
+	var prefix string
+	if id.OrgID != "" {
+		prefix = "org/" + id.OrgID
+	} else {
+		prefix = "user/" + id.UserID
+	}
+	if len(segments) == 0 {
+		return prefix
+	}
+	return prefix + "/" + strings.Join(segments, "/")
+}
+
+// resolve performs the per-request identity lookup and segment parsing.
+// Returns the namespaced R2 storage key, the original accessToken (for
+// echoing back in responses), or an HTTP-mapped error already written to
+// the response.
+func (h *ItemHandler) resolve(w http.ResponseWriter, r *http.Request, accessToken string) (string, bool) {
+	segments, err := validatePathSegments(r.Header.Get(pathHeader))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return "", false
+	}
+
+	id, err := h.resolver.Resolve(r.Context(), accessToken)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrInvalidToken):
+			writeError(w, http.StatusUnauthorized, "invalid access token")
+		case errors.Is(err, auth.ErrUpstreamUnavailable):
+			log.Errorf("identity service unavailable: %v", err)
+			writeError(w, http.StatusBadGateway, "identity service unavailable")
+		default:
+			log.Errorf("identity resolve failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "identity resolve failed")
+		}
+		return "", false
+	}
+	return storageKey(id, segments), true
 }
 
 func (h *ItemHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -86,44 +178,53 @@ func (h *ItemHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	rest := path[len(routePrefix):]
 
-	if lookupKey, ok := strings.CutSuffix(rest, "/encryption-keys"); ok {
-		if err := validateLookupKey(lookupKey); err != nil {
+	if accessToken, ok := strings.CutSuffix(rest, "/encryption-keys"); ok {
+		if err := validateAccessToken(accessToken); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		key, ok := h.resolve(w, r, accessToken)
+		if !ok {
 			return
 		}
 		switch r.Method {
 		case http.MethodPost:
-			h.handleAddKey(w, r, lookupKey)
+			h.handleAddKey(w, r, key)
 		case http.MethodDelete:
-			h.handleRemoveKey(w, r, lookupKey)
+			h.handleRemoveKey(w, r, key)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 		return
 	}
 
-	lookupKey := rest
+	accessToken := rest
 
-	if err := validateLookupKey(lookupKey); err != nil {
+	if err := validateAccessToken(accessToken); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	key, ok := h.resolve(w, r, accessToken)
+	if !ok {
 		return
 	}
 
 	switch r.Method {
 	case http.MethodPut:
-		h.handlePut(w, r, lookupKey)
+		h.handlePut(w, r, accessToken, key)
 	case http.MethodGet:
-		h.handleGet(w, r, lookupKey)
+		h.handleGet(w, r, key)
 	case http.MethodHead:
-		h.handleHead(w, r, lookupKey)
+		h.handleHead(w, r, key)
 	case http.MethodDelete:
-		h.handleDelete(w, r, lookupKey)
+		h.handleDelete(w, r, key)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, accessToken, key string) {
 	var req PutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -141,7 +242,7 @@ func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, lookupKe
 		format = uint8(*req.Format)
 	}
 
-	resp := PutResponse{LookupKey: lookupKey}
+	resp := PutResponse{AccessToken: accessToken}
 	var blob []byte
 
 	switch format {
@@ -172,9 +273,9 @@ func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, lookupKe
 		var version uint64 = 1
 		createdAt := time.Now()
 
-		existing, err := h.store.Get(r.Context(), lookupKey)
+		existing, err := h.store.Get(r.Context(), key)
 		if err != nil {
-			log.Errorf("failed to check existing lookup_key: %v", err)
+			log.Errorf("failed to check existing item: %v", err)
 			writeError(w, http.StatusInternalServerError, "storage error")
 			return
 		}
@@ -201,7 +302,7 @@ func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, lookupKe
 		return
 	}
 
-	if err := h.store.Put(r.Context(), lookupKey, blob); err != nil {
+	if err := h.store.Put(r.Context(), key, blob); err != nil {
 		log.Errorf("failed to store: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
@@ -210,7 +311,7 @@ func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, lookupKe
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, key string) {
 	encKeyB64 := r.Header.Get("X-Encryption-Key")
 	if encKeyB64 == "" {
 		writeError(w, http.StatusBadRequest, "X-Encryption-Key header is required")
@@ -223,14 +324,14 @@ func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, lookupKe
 		return
 	}
 
-	data, err := h.store.Get(r.Context(), lookupKey)
+	data, err := h.store.Get(r.Context(), key)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
 	if data == nil {
-		writeError(w, http.StatusNotFound, "lookup_key not found")
+		writeError(w, http.StatusNotFound, "item not found")
 		return
 	}
 
@@ -262,8 +363,8 @@ func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, lookupKe
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, lookupKey string) {
-	data, err := h.store.Get(r.Context(), lookupKey)
+func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, key string) {
+	data, err := h.store.Get(r.Context(), key)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
@@ -295,8 +396,8 @@ func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, lookupK
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *ItemHandler) handleDelete(w http.ResponseWriter, r *http.Request, lookupKey string) {
-	if err := h.store.Delete(r.Context(), lookupKey); err != nil {
+func (h *ItemHandler) handleDelete(w http.ResponseWriter, r *http.Request, key string) {
+	if err := h.store.Delete(r.Context(), key); err != nil {
 		log.Errorf("failed to delete: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
@@ -304,7 +405,7 @@ func (h *ItemHandler) handleDelete(w http.ResponseWriter, r *http.Request, looku
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, key string) {
 	var req AddKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -322,14 +423,14 @@ func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, looku
 		return
 	}
 
-	data, err := h.store.Get(r.Context(), lookupKey)
+	data, err := h.store.Get(r.Context(), key)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
 	if data == nil {
-		writeError(w, http.StatusNotFound, "lookup_key not found")
+		writeError(w, http.StatusNotFound, "item not found")
 		return
 	}
 
@@ -350,7 +451,7 @@ func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, looku
 		return
 	}
 
-	if err := h.store.Put(r.Context(), lookupKey, updated); err != nil {
+	if err := h.store.Put(r.Context(), key, updated); err != nil {
 		log.Errorf("failed to store: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
@@ -359,7 +460,7 @@ func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, looku
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, lookupKey string) {
+func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, key string) {
 	var req RemoveKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -377,14 +478,14 @@ func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, lo
 		return
 	}
 
-	data, err := h.store.Get(r.Context(), lookupKey)
+	data, err := h.store.Get(r.Context(), key)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
 	if data == nil {
-		writeError(w, http.StatusNotFound, "lookup_key not found")
+		writeError(w, http.StatusNotFound, "item not found")
 		return
 	}
 
@@ -405,7 +506,7 @@ func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, lo
 		return
 	}
 
-	if err := h.store.Put(r.Context(), lookupKey, updated); err != nil {
+	if err := h.store.Put(r.Context(), key, updated); err != nil {
 		log.Errorf("failed to store: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
@@ -438,3 +539,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, ErrorResponse{Error: msg})
 }
+
