@@ -1,206 +1,135 @@
 # Confidential Tinfoil Buckets
 
-An encrypted key value store powered by Cloudflare R2 buckets, designed to run inside a [Tinfoil](https://tinfoil.sh) confidential enclave.
+An encrypted key-value store backed by Cloudflare R2, designed to run inside a [Tinfoil](https://tinfoil.sh) confidential enclave.
 
-Values are encrypted before they reach storage. Clients supply encryption keys with each request, all cryptographic operations happen in-memory inside the enclave, and then the ciphertext is stored in R2 buckets.
+Values are encrypted before they reach storage. Clients supply encryption keys with each request, all cryptographic operations happen in-memory inside the enclave, and only ciphertext is persisted.
 
-Clients are responsible for remembering their lookup keys & not sharing these. They are meant to be cryptographically unguessable.
+## Concepts
+
+- **API key** — a tinfoil API key. Identifies _who_ the caller is; resolved against controlplane to a Clerk user (and optional org) used to namespace storage for billing and deletion.
+- **accessToken** — an unguessable per-item handle the client picks and uses as the URL path. Identifies _which_ item. Treat it like a password: anyone who knows it can write to it. 36–76 chars, charset `[A-Za-z0-9_-]`.
+- **Encryption key** — a 32-byte AES-256 key the client supplies per-request. Never persisted; lives in enclave memory only for the duration of the call.
+
+Items are stored under `{org,user}/{tenantID}/[X-Item-Path/]<accessToken>` in R2.
 
 ## Encryption Formats
 
-### v1 (default) -- Envelope Encryption
+**v1 (default) — Envelope encryption.** A random DEK encrypts the value with AES-256-GCM. The DEK is wrapped separately under each user-provided key as independent **key slots**, allowing multiple keys per item, key rotation without re-encrypting the value, and version/timestamp tracking.
 
-A random data encryption key (DEK) encrypts the value with AES-256-GCM. The DEK is then wrapped (encrypted) separately under each user-provided key, creating independent **key slots**. This enables:
-
-- Multiple encryption keys for one value
-- Adding or removing keys to a bucket entry without re-encrypting the value
-- Automatic version tracking and creation timestamps
-
-### v0 (legacy) -- Direct Encryption
-
-The user key encrypts the value directly with AES-256-GCM. Simpler, does not support multiple encryption keys or encryption key rotation.
+**v0 (legacy) — Direct encryption.** The user key encrypts the value directly with AES-256-GCM. Simpler, does not support multiple encryption keys or encryption key rotation.
 
 ## API
 
-### Store a value
+All `/items/*` endpoints require `Authorization: Bearer <api_key>`.
 
-```
-PUT /items/{lookup_key}
-```
-
-`{lookup_key}` is required and must be at least 36 characters (UUID-length, to ensure adequate entropy).
+### Store a value — `PUT /items/{accessToken}`
 
 ```bash
-# Generate a 256-bit encryption key
 KEY=$(openssl rand -base64 32)
-
-# Store a value (v1, default)
-curl -X PUT http://localhost:8089/items/uuid \
+curl -X PUT http://localhost:8089/items/$ACCESS_TOKEN \
+  -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{
-    \"value\": \"$(echo -n 'hello world' | base64)\",
-    \"encryption_keys\": [\"$KEY\"]
-  }"
+  -d "{\"value\": \"$(echo -n 'hello world' | base64)\", \"encryption_keys\": [\"$KEY\"]}"
 ```
 
-**Request body:**
+| Field             | Type     | Description                    |
+| ----------------- | -------- | ------------------------------ |
+| `value`           | string   | Base64-encoded plaintext       |
+| `encryption_keys` | string[] | Base64 32-byte keys (v1)       |
+| `encryption_key`  | string   | Single base64 32-byte key (v0) |
+| `format`          | int      | `0` or `1` (default: `1`)      |
 
-| Field             | Type     | Description                                       |
-| ----------------- | -------- | ------------------------------------------------- |
-| `value`           | string   | Base64-encoded plaintext                          |
-| `encryption_keys` | string[] | Base64-encoded 32-byte encryption keys (v1)       |
-| `encryption_key`  | string   | Single base64-encoded 32-byte encryption key (v0) |
-| `format`          | int      | `0` or `1` (default: `1`)                         |
+Response (v1): `{ "version": 1, "created_at": "2026-04-10T12:00:00Z" }`. v0 returns `{}`.
 
-**Response:**
-
-```json
-{
-  "lookup_key": "uuid",
-  "version": 1,
-  "created_at": "2026-04-10T12:00:00.000Z"
-}
-```
-
-### Retrieve a value
-
-```
-GET /items/{lookup_key}
-```
+### Retrieve a value — `GET /items/{accessToken}`
 
 ```bash
-curl http://localhost:8089/items/uuid \
+curl http://localhost:8089/items/$ACCESS_TOKEN \
+  -H "Authorization: Bearer $API_KEY" \
   -H "X-Encryption-Key: $KEY"
 ```
 
-**Response:**
+Response: `{ "value": "<base64>", "version": 1, "created_at": "...", "format": 1 }`.
 
-```json
-{
-  "value": "aGVsbG8gd29ybGQ=",
-  "version": 1,
-  "created_at": "2026-04-10T12:00:00.000Z",
-  "format": 1
-}
-```
+### Inspect metadata — `HEAD /items/{accessToken}`
 
-### Inspect metadata
+Returns headers without decrypting:
 
-```
-HEAD /items/{lookup_key}
-```
+| Header                          | Description                               |
+| ------------------------------- | ----------------------------------------- |
+| `X-Format`                      | `0` or `1`                                |
+| `X-Version`                     | Value version (v1 only)                   |
+| `X-Created-At`                  | Creation timestamp (v1 only)              |
+| `X-Num-Encryption-Keys`         | Number of key slots (v1 only)             |
+| `X-Encryption-Key-Fingerprints` | Comma-separated SHA-256 key IDs (v1 only) |
 
-Returns headers without decrypting the value:
-
-| Header                          | Description                                          |
-| ------------------------------- | ---------------------------------------------------- |
-| `X-Format`                      | `0` or `1`                                           |
-| `X-Version`                     | Value version (v1 only)                              |
-| `X-Created-At`                  | Creation timestamp (v1 only)                         |
-| `X-Num-Encryption-Keys`         | Number of encryption-key slots (v1 only)             |
-| `X-Encryption-Key-Fingerprints` | Comma-separated SHA-256 encryption-key IDs (v1 only) |
-
-### Delete a value
-
-```
-DELETE /items/{lookup_key}
-```
+### Delete — `DELETE /items/{accessToken}`
 
 Returns `204 No Content`.
 
-### Add an encryption key
+### Add an encryption key — `POST /items/{accessToken}/encryption-keys`
 
-```
-POST /items/{lookup_key}/encryption-keys
-```
-
-Adds a new key slot to a v1 envelope without re-encrypting the value. Requires an existing authorized encryption key to unwrap the DEK.
+Adds a new v1 key slot without re-encrypting the value. Requires an existing authorized key.
 
 ```json
-{
-  "existing_encryption_key": "<base64 encryption key that can currently decrypt>",
-  "new_encryption_key": "<base64 encryption key to add>"
-}
+{ "existing_encryption_key": "<base64>", "new_encryption_key": "<base64>" }
 ```
 
-### Remove an encryption key
+### Remove an encryption key — `DELETE /items/{accessToken}/encryption-keys`
 
-```
-DELETE /items/{lookup_key}/encryption-keys
-```
-
-Removes a key slot from a v1 envelope. Cannot remove the last encryption key.
+Removes a v1 key slot. Cannot remove the last key.
 
 ```json
-{
-  "existing_encryption_key": "<base64 encryption key that can currently decrypt>",
-  "remove_encryption_key": "<base64 encryption key to remove>"
-}
+{ "existing_encryption_key": "<base64>", "remove_encryption_key": "<base64>" }
 ```
 
-### Health check
+### Nested folders — `X-Item-Path` (optional)
 
-```
-GET /health
+Adds caller-defined path segments between the tenant prefix and the `accessToken`, scoping items into folders. Up to 4 slash-separated segments, each 1–36 chars, charset `[A-Za-z0-9_-]`.
+
+```bash
+curl ... -H "X-Item-Path: customers/abc/profile"
+# stored at user/<userID>/customers/abc/profile/<accessToken>
 ```
 
-Returns `{"status":"ok"}`.
+### Health — `GET /health`
+
+Returns `{"status":"ok"}`. No auth required.
 
 ## Binary Envelope Format
 
-### v0
+**v0:** `[0x00] [IV: 12B] [AES-GCM ciphertext + tag]`
 
-```
-[0x00] [IV: 12B] [AES-GCM ciphertext + tag]
-```
+**v1:** `[0x01] [num_slots: 2B] [created_at_ms: 8B] [version: 8B] [key_id: 32B | encrypted_dek: 60B] x num_slots [IV: 12B] [AES-GCM ciphertext + tag]`
 
-### v1
-
-```
-[0x01] [num_slots: 2B] [created_at_ms: 8B] [version: 8B]
-[key_id: 32B | encrypted_dek: 60B] x num_slots
-[IV: 12B] [AES-GCM ciphertext + tag]
-```
-
-Each key slot is 92 bytes: a SHA-256 fingerprint of the encryption key (32B) followed by the DEK encrypted with that encryption key (IV 12B + ciphertext 32B + GCM tag 16B).
+Each key slot is 92 bytes: SHA-256 fingerprint of the encryption key (32B) + DEK encrypted with that key (IV 12B + ciphertext 32B + GCM tag 16B).
 
 ## Configuration
 
-| Variable                | Default    | Description                |
-| ----------------------- | ---------- | -------------------------- |
-| `CLOUDFLARE_ACCOUNT_ID`              | required         | Cloudflare account ID       |
-| `R2_TINFOIL_BUCKET_ACCESS_KEY_ID`    | required         | R2 S3 API access key ID     |
-| `R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY`| required         | R2 S3 API secret access key |
-| `R2_BUCKET_NAME`                     | `tinfoil-bucket` | R2 bucket name              |
-| `LISTEN_ADDR`                        | `:8089`          | HTTP listen address         |
+| Variable                              | Default          | Description                           |
+| ------------------------------------- | ---------------- | ------------------------------------- |
+| `CLOUDFLARE_ACCOUNT_ID`               | required         | Cloudflare account ID                 |
+| `R2_TINFOIL_BUCKET_ACCESS_KEY_ID`     | required         | R2 S3 API access key ID               |
+| `R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY` | required         | R2 S3 API secret access key           |
+| `CONTROLPLANE_URL`                    | required         | Base URL of controlplane for identity |
+| `R2_BUCKET_NAME`                      | `tinfoil-bucket` | R2 bucket name                        |
+| `LISTEN_ADDR`                         | `:8089`          | HTTP listen address                   |
 
 ## Running
 
 ```bash
-export CLOUDFLARE_ACCOUNT_ID="your-account-id"
-export R2_TINFOIL_BUCKET_ACCESS_KEY_ID="your-r2-access-key-id"
-export R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY="your-r2-secret-access-key"
-
+export CLOUDFLARE_ACCOUNT_ID=...
+export R2_TINFOIL_BUCKET_ACCESS_KEY_ID=...
+export R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY=...
+export CONTROLPLANE_URL=https://controlplane.tinfoil.sh
 go run .
-```
-
-### Docker
-
-```bash
-docker build -t tinfoil-buckets .
-docker run -p 8089:8089 \
-  -e CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID \
-  -e R2_TINFOIL_BUCKET_ACCESS_KEY_ID=$R2_TINFOIL_BUCKET_ACCESS_KEY_ID \
-  -e R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY=$R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY \
-  tinfoil-buckets
 ```
 
 ## Security
 
-- Designed for [Tinfoil](https://tinfoil.sh) confidential enclaves -- all processing occurs within a trusted execution environment
-- The server never stores plaintext values or encryption keys
-- Clients supply encryption keys per-request; keys exist in-memory only during the operation
-- All cryptography uses Go's standard library (`crypto/aes`, `crypto/cipher`, `crypto/rand`)
+- Designed for [Tinfoil](https://tinfoil.sh) confidential enclaves — all processing occurs within a trusted execution environment.
+- The server never stores plaintext values or encryption keys.
+- Encryption keys are supplied per-request and exist in-memory only during the operation.
 - AES-256-GCM provides authenticated encryption with 128-bit authentication tags
 
 ## Reporting Vulnerabilities

@@ -8,6 +8,7 @@ type Config struct {
 	R2SecretAccessKey   string
 	R2BucketName        string
 	ListenAddr          string
+	ControlplaneURL     string
 }
 
 func Load() *Config {
@@ -17,6 +18,7 @@ func Load() *Config {
 		R2SecretAccessKey:   os.Getenv("R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY"),
 		R2BucketName:        getEnv("R2_BUCKET_NAME", "tinfoil-bucket"),
 		ListenAddr:          getEnv("LISTEN_ADDR", ":8089"),
+		ControlplaneURL:     os.Getenv("CONTROLPLANE_URL"),
 	}
 }
 
