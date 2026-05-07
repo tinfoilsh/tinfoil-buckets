@@ -1,10 +1,10 @@
-// Package auth resolves controlplane API keys to the owning Clerk user
+// Package identity resolves controlplane API keys to the owning Clerk user
 // or organization by calling controlplane's /api/internal/key-identity
 // endpoint. The returned identity is used by the item handler to namespace
 // R2 storage keys per tenant. Validity of the API key is enforced by the
 // shim before the request reaches this service; this lookup is identity
 // only.
-package auth
+package identity
 
 import (
 	"bytes"

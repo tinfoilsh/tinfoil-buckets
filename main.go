@@ -10,7 +10,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/tinfoilsh/tinfoil-buckets/auth"
+	"github.com/tinfoilsh/tinfoil-buckets/identity"
 	"github.com/tinfoilsh/tinfoil-buckets/config"
 	"github.com/tinfoilsh/tinfoil-buckets/handler"
 	"github.com/tinfoilsh/tinfoil-buckets/store"
@@ -25,7 +25,7 @@ func main() {
 	}
 
 	r2 := store.NewR2Store(cfg.CloudflareAccountID, cfg.R2AccessKeyID, cfg.R2SecretAccessKey, cfg.R2BucketName)
-	resolver := auth.NewHTTPResolver(cfg.ControlPlaneURL)
+	resolver := identity.NewHTTPResolver(cfg.ControlPlaneURL)
 
 	reporter, err := usage.NewReporter(cfg.ControlPlaneURL, cfg.UsageReporterID, cfg.UsageReporterSecret)
 	if err != nil {

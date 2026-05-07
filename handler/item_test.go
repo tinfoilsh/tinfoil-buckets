@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
-	"github.com/tinfoilsh/tinfoil-buckets/auth"
+	"github.com/tinfoilsh/tinfoil-buckets/identity"
 	"github.com/tinfoilsh/tinfoil-buckets/store"
 )
 
@@ -61,13 +61,13 @@ func (m *mockS3) HeadObject(_ context.Context, input *s3.HeadObjectInput, _ ...f
 // stubResolver returns a fixed identity for any token. err, when set,
 // short-circuits Resolve before consulting identity.
 type stubResolver struct {
-	identity auth.Identity
+	identity identity.Identity
 	err      error
 }
 
-func (s *stubResolver) Resolve(_ context.Context, _ string) (auth.Identity, error) {
+func (s *stubResolver) Resolve(_ context.Context, _ string) (identity.Identity, error) {
 	if s.err != nil {
-		return auth.Identity{}, s.err
+		return identity.Identity{}, s.err
 	}
 	return s.identity, nil
 }
@@ -81,7 +81,7 @@ func randomKeyB64(t *testing.T) string {
 
 // randomAccessToken returns a 36-char hex string suitable for use as an
 // accessToken (satisfies minAccessTokenLength=36 and contains no
-// URL-special chars). The accessToken is the URL handle, not auth.
+// URL-special chars). The accessToken is the URL handle, not identity.
 func randomAccessToken(t *testing.T) string {
 	t.Helper()
 	b := make([]byte, 18)
@@ -105,10 +105,10 @@ func authReq(method, target string, body []byte) *http.Request {
 func setupHandler() (*ItemHandler, *mockS3) {
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
-	return NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_test"}}, nil), m
+	return NewItemHandler(s, &stubResolver{identity: identity.Identity{UserID: "user_test"}}, nil), m
 }
 
-func setupHandlerWithResolver(resolver auth.Resolver) *ItemHandler {
+func setupHandlerWithResolver(resolver identity.Resolver) *ItemHandler {
 	s := store.NewR2StoreWithClient(newMockS3(), "test")
 	return NewItemHandler(s, resolver, nil)
 }
@@ -603,7 +603,7 @@ func TestHeadReturnsFingerprints(t *testing.T) {
 func TestStorageKeyOrgPrefix(t *testing.T) {
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}}, nil)
+	h := NewItemHandler(s, &stubResolver{identity: identity.Identity{UserID: "user_x", OrgID: "org_y"}}, nil)
 
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -626,7 +626,7 @@ func TestStorageKeyOrgPrefix(t *testing.T) {
 func TestStorageKeyUserPrefix(t *testing.T) {
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x"}}, nil)
+	h := NewItemHandler(s, &stubResolver{identity: identity.Identity{UserID: "user_x"}}, nil)
 
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -653,7 +653,7 @@ func TestStorageKeyV0OrgPrefix(t *testing.T) {
 	// caught for both formats.
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}}, nil)
+	h := NewItemHandler(s, &stubResolver{identity: identity.Identity{UserID: "user_x", OrgID: "org_y"}}, nil)
 
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -677,7 +677,7 @@ func TestStorageKeyV0OrgPrefix(t *testing.T) {
 func TestStorageKeyWithSegments(t *testing.T) {
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}}, nil)
+	h := NewItemHandler(s, &stubResolver{identity: identity.Identity{UserID: "user_x", OrgID: "org_y"}}, nil)
 
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -703,7 +703,7 @@ func TestSegmentsIsolateNamespaces(t *testing.T) {
 	// values must produce two distinct items.
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x"}}, nil)
+	h := NewItemHandler(s, &stubResolver{identity: identity.Identity{UserID: "user_x"}}, nil)
 
 	encKey := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -831,7 +831,7 @@ func TestEmptyBearerReturns401(t *testing.T) {
 }
 
 func TestInvalidTokenReturns401(t *testing.T) {
-	h := setupHandlerWithResolver(&stubResolver{err: auth.ErrInvalidToken})
+	h := setupHandlerWithResolver(&stubResolver{err: identity.ErrInvalidToken})
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("data"))
@@ -847,7 +847,7 @@ func TestInvalidTokenReturns401(t *testing.T) {
 }
 
 func TestUpstreamUnavailableReturns502(t *testing.T) {
-	h := setupHandlerWithResolver(&stubResolver{err: auth.ErrUpstreamUnavailable})
+	h := setupHandlerWithResolver(&stubResolver{err: identity.ErrUpstreamUnavailable})
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("data"))

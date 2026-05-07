@@ -13,7 +13,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/tinfoilsh/tinfoil-buckets/auth"
+	"github.com/tinfoilsh/tinfoil-buckets/identity"
 	"github.com/tinfoilsh/tinfoil-buckets/crypto"
 	"github.com/tinfoilsh/tinfoil-buckets/store"
 )
@@ -22,20 +22,20 @@ import (
 // The handler tolerates a nil reporter so local dev without a controlplane
 // keeps working.
 type UsageReporter interface {
-	ReportOperation(req *http.Request, identity auth.Identity, operationName string, attributes map[string]string)
+	ReportOperation(req *http.Request, identity identity.Identity, operationName string, attributes map[string]string)
 }
 
 type ItemHandler struct {
 	store    *store.R2Store
-	resolver auth.Resolver
+	resolver identity.Resolver
 	reporter UsageReporter
 }
 
-func NewItemHandler(store *store.R2Store, resolver auth.Resolver, reporter UsageReporter) *ItemHandler {
+func NewItemHandler(store *store.R2Store, resolver identity.Resolver, reporter UsageReporter) *ItemHandler {
 	return &ItemHandler{store: store, resolver: resolver, reporter: reporter}
 }
 
-func (h *ItemHandler) report(r *http.Request, identity auth.Identity, operationName string, attrs map[string]string) {
+func (h *ItemHandler) report(r *http.Request, identity identity.Identity, operationName string, attrs map[string]string) {
 	if h.reporter == nil {
 		return
 	}
@@ -161,7 +161,7 @@ func isValidSegment(s string) bool {
 // The two namespaces are disjoint. The accessToken is the leaf of the
 // key — it lives under the tenant + segment prefix so that callers can
 // have many distinct items addressed by their own identifier.
-func storageKey(id auth.Identity, segments []string, accessToken string) string {
+func storageKey(id identity.Identity, segments []string, accessToken string) string {
 	var prefix string
 	if id.OrgID != "" {
 		prefix = "org/" + id.OrgID
@@ -195,32 +195,32 @@ func bearerToken(h string) (string, error) {
 // only used as the leaf of the storage key. Returns the namespaced R2
 // storage key, the resolved identity for usage attribution, or false
 // after writing an HTTP error.
-func (h *ItemHandler) resolve(w http.ResponseWriter, r *http.Request, accessToken string) (string, auth.Identity, bool) {
+func (h *ItemHandler) resolve(w http.ResponseWriter, r *http.Request, accessToken string) (string, identity.Identity, bool) {
 	apiKey, err := bearerToken(r.Header.Get("Authorization"))
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
-		return "", auth.Identity{}, false
+		return "", identity.Identity{}, false
 	}
 
 	segments, err := validatePathSegments(r.Header.Get(pathHeader))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return "", auth.Identity{}, false
+		return "", identity.Identity{}, false
 	}
 
 	id, err := h.resolver.Resolve(r.Context(), apiKey)
 	if err != nil {
 		switch {
-		case errors.Is(err, auth.ErrInvalidToken):
+		case errors.Is(err, identity.ErrInvalidToken):
 			writeError(w, http.StatusUnauthorized, "invalid api key")
-		case errors.Is(err, auth.ErrUpstreamUnavailable):
+		case errors.Is(err, identity.ErrUpstreamUnavailable):
 			log.Errorf("identity service unavailable: %v", err)
 			writeError(w, http.StatusBadGateway, "identity service unavailable")
 		default:
 			log.Errorf("identity resolve failed: %v", err)
 			writeError(w, http.StatusInternalServerError, "identity resolve failed")
 		}
-		return "", auth.Identity{}, false
+		return "", identity.Identity{}, false
 	}
 	return storageKey(id, segments, accessToken), id, true
 }
@@ -280,7 +280,7 @@ func (h *ItemHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, identity auth.Identity, key string) {
+func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, identity identity.Identity, key string) {
 	var req PutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -371,7 +371,7 @@ func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, identity
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, identity auth.Identity, key string) {
+func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, identity identity.Identity, key string) {
 	encKeyB64 := r.Header.Get("X-Encryption-Key")
 	if encKeyB64 == "" {
 		writeError(w, http.StatusBadRequest, "X-Encryption-Key header is required")
@@ -428,7 +428,7 @@ func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, identity
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, identity auth.Identity, key string) {
+func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, identity identity.Identity, key string) {
 	data, err := h.store.Get(r.Context(), key)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
@@ -466,7 +466,7 @@ func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, identit
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *ItemHandler) handleDelete(w http.ResponseWriter, r *http.Request, identity auth.Identity, key string) {
+func (h *ItemHandler) handleDelete(w http.ResponseWriter, r *http.Request, identity identity.Identity, key string) {
 	if err := h.store.Delete(r.Context(), key); err != nil {
 		log.Errorf("failed to delete: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
@@ -478,7 +478,7 @@ func (h *ItemHandler) handleDelete(w http.ResponseWriter, r *http.Request, ident
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, identity auth.Identity, key string) {
+func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, identity identity.Identity, key string) {
 	var req AddKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -535,7 +535,7 @@ func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, ident
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, identity auth.Identity, key string) {
+func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, identity identity.Identity, key string) {
 	var req RemoveKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")

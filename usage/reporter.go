@@ -11,7 +11,7 @@ import (
 	usageclient "github.com/tinfoilsh/usage-reporting-go/client"
 	"github.com/tinfoilsh/usage-reporting-go/contract"
 
-	"github.com/tinfoilsh/tinfoil-buckets/auth"
+	"github.com/tinfoilsh/tinfoil-buckets/identity"
 )
 
 const serviceName = "buckets"
@@ -63,7 +63,7 @@ func validateEndpoint(endpoint string) error {
 // per-operation price configured in meter_pricing.json. The bearer API key
 // is used for owner attribution; the resolved identity is attached as
 // attributes for observability.
-func (r *Reporter) ReportOperation(req *http.Request, identity auth.Identity, operationName string, attributes map[string]string) {
+func (r *Reporter) ReportOperation(req *http.Request, identity identity.Identity, operationName string, attributes map[string]string) {
 	if r == nil || r.client == nil || !r.client.Enabled() {
 		return
 	}
