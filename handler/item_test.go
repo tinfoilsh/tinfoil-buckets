@@ -105,12 +105,12 @@ func authReq(method, target string, body []byte) *http.Request {
 func setupHandler() (*ItemHandler, *mockS3) {
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
-	return NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_test"}}), m
+	return NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_test"}}, nil), m
 }
 
 func setupHandlerWithResolver(resolver auth.Resolver) *ItemHandler {
 	s := store.NewR2StoreWithClient(newMockS3(), "test")
-	return NewItemHandler(s, resolver)
+	return NewItemHandler(s, resolver, nil)
 }
 
 func TestPutAndGet(t *testing.T) {
@@ -603,7 +603,7 @@ func TestHeadReturnsFingerprints(t *testing.T) {
 func TestStorageKeyOrgPrefix(t *testing.T) {
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}})
+	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}}, nil)
 
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -626,7 +626,7 @@ func TestStorageKeyOrgPrefix(t *testing.T) {
 func TestStorageKeyUserPrefix(t *testing.T) {
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x"}})
+	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x"}}, nil)
 
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -653,7 +653,7 @@ func TestStorageKeyV0OrgPrefix(t *testing.T) {
 	// caught for both formats.
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}})
+	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}}, nil)
 
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -677,7 +677,7 @@ func TestStorageKeyV0OrgPrefix(t *testing.T) {
 func TestStorageKeyWithSegments(t *testing.T) {
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}})
+	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}}, nil)
 
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -703,7 +703,7 @@ func TestSegmentsIsolateNamespaces(t *testing.T) {
 	// values must produce two distinct items.
 	m := newMockS3()
 	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x"}})
+	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x"}}, nil)
 
 	encKey := randomKeyB64(t)
 	tok := randomAccessToken(t)

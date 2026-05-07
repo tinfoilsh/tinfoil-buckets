@@ -18,13 +18,28 @@ import (
 	"github.com/tinfoilsh/tinfoil-buckets/store"
 )
 
+// UsageReporter records one usage event per successful storage operation.
+// The handler tolerates a nil reporter so local dev without a controlplane
+// keeps working.
+type UsageReporter interface {
+	ReportOperation(req *http.Request, identity auth.Identity, operationName string, attributes map[string]string)
+}
+
 type ItemHandler struct {
 	store    *store.R2Store
 	resolver auth.Resolver
+	reporter UsageReporter
 }
 
-func NewItemHandler(store *store.R2Store, resolver auth.Resolver) *ItemHandler {
-	return &ItemHandler{store: store, resolver: resolver}
+func NewItemHandler(store *store.R2Store, resolver auth.Resolver, reporter UsageReporter) *ItemHandler {
+	return &ItemHandler{store: store, resolver: resolver, reporter: reporter}
+}
+
+func (h *ItemHandler) report(r *http.Request, identity auth.Identity, operationName string, attrs map[string]string) {
+	if h.reporter == nil {
+		return
+	}
+	h.reporter.ReportOperation(r, identity, operationName, attrs)
 }
 
 // PUT /items/{accessToken}
@@ -74,6 +89,15 @@ const (
 	maxPathSegmentLength = 36
 	routePrefix          = "/items/"
 	pathHeader           = "X-Item-Path"
+)
+
+const (
+	operationPutObject    = "put_object"
+	operationGetObject    = "get_object"
+	operationHeadObject   = "head_object"
+	operationDeleteObject = "delete_object"
+	operationAddKey       = "add_key"
+	operationRemoveKey    = "remove_key"
 )
 
 func validateAccessToken(accessToken string) error {
@@ -169,18 +193,19 @@ func bearerToken(h string) (string, error) {
 // storage-key construction. The API key is read from the Authorization
 // header and forwarded to controlplane; the accessToken from the URL is
 // only used as the leaf of the storage key. Returns the namespaced R2
-// storage key, or false after writing an HTTP error.
-func (h *ItemHandler) resolve(w http.ResponseWriter, r *http.Request, accessToken string) (string, bool) {
+// storage key, the resolved identity for usage attribution, or false
+// after writing an HTTP error.
+func (h *ItemHandler) resolve(w http.ResponseWriter, r *http.Request, accessToken string) (string, auth.Identity, bool) {
 	apiKey, err := bearerToken(r.Header.Get("Authorization"))
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
-		return "", false
+		return "", auth.Identity{}, false
 	}
 
 	segments, err := validatePathSegments(r.Header.Get(pathHeader))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return "", false
+		return "", auth.Identity{}, false
 	}
 
 	id, err := h.resolver.Resolve(r.Context(), apiKey)
@@ -195,9 +220,9 @@ func (h *ItemHandler) resolve(w http.ResponseWriter, r *http.Request, accessToke
 			log.Errorf("identity resolve failed: %v", err)
 			writeError(w, http.StatusInternalServerError, "identity resolve failed")
 		}
-		return "", false
+		return "", auth.Identity{}, false
 	}
-	return storageKey(id, segments, accessToken), true
+	return storageKey(id, segments, accessToken), id, true
 }
 
 func (h *ItemHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -214,15 +239,15 @@ func (h *ItemHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		key, ok := h.resolve(w, r, accessToken)
+		key, identity, ok := h.resolve(w, r, accessToken)
 		if !ok {
 			return
 		}
 		switch r.Method {
 		case http.MethodPost:
-			h.handleAddKey(w, r, key)
+			h.handleAddKey(w, r, identity, key)
 		case http.MethodDelete:
-			h.handleRemoveKey(w, r, key)
+			h.handleRemoveKey(w, r, identity, key)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -236,26 +261,26 @@ func (h *ItemHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, ok := h.resolve(w, r, accessToken)
+	key, identity, ok := h.resolve(w, r, accessToken)
 	if !ok {
 		return
 	}
 
 	switch r.Method {
 	case http.MethodPut:
-		h.handlePut(w, r, key)
+		h.handlePut(w, r, identity, key)
 	case http.MethodGet:
-		h.handleGet(w, r, key)
+		h.handleGet(w, r, identity, key)
 	case http.MethodHead:
-		h.handleHead(w, r, key)
+		h.handleHead(w, r, identity, key)
 	case http.MethodDelete:
-		h.handleDelete(w, r, key)
+		h.handleDelete(w, r, identity, key)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, key string) {
+func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, identity auth.Identity, key string) {
 	var req PutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -339,10 +364,14 @@ func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, key stri
 		return
 	}
 
+	h.report(r, identity, operationPutObject, map[string]string{
+		"format": strconv.Itoa(int(format)),
+	})
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, key string) {
+func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, identity auth.Identity, key string) {
 	encKeyB64 := r.Header.Get("X-Encryption-Key")
 	if encKeyB64 == "" {
 		writeError(w, http.StatusBadRequest, "X-Encryption-Key header is required")
@@ -391,10 +420,15 @@ func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, key stri
 		resp.Version = meta.ValueVersion
 		resp.CreatedAt = meta.CreatedAt.UTC().Format(time.RFC3339Nano)
 	}
+
+	h.report(r, identity, operationGetObject, map[string]string{
+		"format": strconv.Itoa(int(meta.FormatVersion)),
+	})
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, key string) {
+func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, identity auth.Identity, key string) {
 	data, err := h.store.Get(r.Context(), key)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
@@ -424,19 +458,27 @@ func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, key str
 		}
 		w.Header().Set("X-Encryption-Key-Fingerprints", strings.Join(fingerprints, ","))
 	}
+
+	h.report(r, identity, operationHeadObject, map[string]string{
+		"format": strconv.Itoa(int(meta.FormatVersion)),
+	})
+
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *ItemHandler) handleDelete(w http.ResponseWriter, r *http.Request, key string) {
+func (h *ItemHandler) handleDelete(w http.ResponseWriter, r *http.Request, identity auth.Identity, key string) {
 	if err := h.store.Delete(r.Context(), key); err != nil {
 		log.Errorf("failed to delete: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
+
+	h.report(r, identity, operationDeleteObject, nil)
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, key string) {
+func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, identity auth.Identity, key string) {
 	var req AddKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -488,10 +530,12 @@ func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, key s
 		return
 	}
 
+	h.report(r, identity, operationAddKey, nil)
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, key string) {
+func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, identity auth.Identity, key string) {
 	var req RemoveKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -542,6 +586,8 @@ func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, ke
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
+
+	h.report(r, identity, operationRemoveKey, nil)
 
 	w.WriteHeader(http.StatusNoContent)
 }
