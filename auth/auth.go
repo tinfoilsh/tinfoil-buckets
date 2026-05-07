@@ -1,7 +1,9 @@
 // Package auth resolves controlplane API keys to the owning Clerk user
-// or organization by calling controlplane's /api/shim/identity endpoint.
-// The returned identity is used by the item handler to namespace R2
-// storage keys per tenant.
+// or organization by calling controlplane's /api/internal/key-identity
+// endpoint. The returned identity is used by the item handler to namespace
+// R2 storage keys per tenant. Validity of the API key is enforced by the
+// shim before the request reaches this service; this lookup is identity
+// only.
 package auth
 
 import (
@@ -37,7 +39,7 @@ var ErrInvalidToken = errors.New("invalid api key")
 // non-2xx responses from controlplane. Callers should map this to 502.
 var ErrUpstreamUnavailable = errors.New("identity service unavailable")
 
-// HTTPResolver calls controlplane's POST /api/shim/identity.
+// HTTPResolver calls controlplane's POST /api/internal/key-identity.
 type HTTPResolver struct {
 	baseURL string
 	client  *http.Client
@@ -63,7 +65,7 @@ func (r *HTTPResolver) Resolve(ctx context.Context, apiKey string) (Identity, er
 		return Identity{}, fmt.Errorf("marshal identity request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.baseURL+"/api/shim/identity", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.baseURL+"/api/internal/key-identity", bytes.NewReader(body))
 	if err != nil {
 		return Identity{}, fmt.Errorf("build identity request: %w", err)
 	}
