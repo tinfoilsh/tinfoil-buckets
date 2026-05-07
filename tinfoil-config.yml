@@ -23,3 +23,6 @@ shim:
     - /items/*
     - /mcp
     - /health
+  authenticated: true
+  authenticated-endpoints:
+    - /items/*
