@@ -1,4 +1,4 @@
-package handler
+package main
 
 import (
 	"encoding/base64"
@@ -12,30 +12,26 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-
-	"github.com/tinfoilsh/tinfoil-buckets/identity"
-	"github.com/tinfoilsh/tinfoil-buckets/crypto"
-	"github.com/tinfoilsh/tinfoil-buckets/store"
 )
 
 // UsageReporter records one usage event per successful storage operation.
 // The handler tolerates a nil reporter so local dev without a controlplane
 // keeps working.
 type UsageReporter interface {
-	ReportOperation(req *http.Request, identity identity.Identity, operationName string, attributes map[string]string)
+	ReportOperation(req *http.Request, identity Identity, operationName string, attributes map[string]string)
 }
 
 type ItemHandler struct {
-	store    *store.R2Store
-	resolver identity.Resolver
+	store    *R2Store
+	resolver Resolver
 	reporter UsageReporter
 }
 
-func NewItemHandler(store *store.R2Store, resolver identity.Resolver, reporter UsageReporter) *ItemHandler {
+func NewItemHandler(store *R2Store, resolver Resolver, reporter UsageReporter) *ItemHandler {
 	return &ItemHandler{store: store, resolver: resolver, reporter: reporter}
 }
 
-func (h *ItemHandler) report(r *http.Request, identity identity.Identity, operationName string, attrs map[string]string) {
+func (h *ItemHandler) report(r *http.Request, identity Identity, operationName string, attrs map[string]string) {
 	if h.reporter == nil {
 		return
 	}
@@ -161,7 +157,7 @@ func isValidSegment(s string) bool {
 // The two namespaces are disjoint. The accessToken is the leaf of the
 // key — it lives under the tenant + segment prefix so that callers can
 // have many distinct items addressed by their own identifier.
-func storageKey(id identity.Identity, segments []string, accessToken string) string {
+func storageKey(id Identity, segments []string, accessToken string) string {
 	var prefix string
 	if id.OrgID != "" {
 		prefix = "org/" + id.OrgID
@@ -195,32 +191,32 @@ func bearerToken(h string) (string, error) {
 // only used as the leaf of the storage key. Returns the namespaced R2
 // storage key, the resolved identity for usage attribution, or false
 // after writing an HTTP error.
-func (h *ItemHandler) resolve(w http.ResponseWriter, r *http.Request, accessToken string) (string, identity.Identity, bool) {
+func (h *ItemHandler) resolve(w http.ResponseWriter, r *http.Request, accessToken string) (string, Identity, bool) {
 	apiKey, err := bearerToken(r.Header.Get("Authorization"))
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
-		return "", identity.Identity{}, false
+		return "", Identity{}, false
 	}
 
 	segments, err := validatePathSegments(r.Header.Get(pathHeader))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return "", identity.Identity{}, false
+		return "", Identity{}, false
 	}
 
 	id, err := h.resolver.Resolve(r.Context(), apiKey)
 	if err != nil {
 		switch {
-		case errors.Is(err, identity.ErrInvalidToken):
+		case errors.Is(err, ErrInvalidToken):
 			writeError(w, http.StatusUnauthorized, "invalid api key")
-		case errors.Is(err, identity.ErrUpstreamUnavailable):
+		case errors.Is(err, ErrUpstreamUnavailable):
 			log.Errorf("identity service unavailable: %v", err)
 			writeError(w, http.StatusBadGateway, "identity service unavailable")
 		default:
 			log.Errorf("identity resolve failed: %v", err)
 			writeError(w, http.StatusInternalServerError, "identity resolve failed")
 		}
-		return "", identity.Identity{}, false
+		return "", Identity{}, false
 	}
 	return storageKey(id, segments, accessToken), id, true
 }
@@ -280,7 +276,7 @@ func (h *ItemHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, identity identity.Identity, key string) {
+func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, identity Identity, key string) {
 	var req PutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -293,7 +289,7 @@ func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, identity
 		return
 	}
 
-	format := uint8(crypto.FormatV1)
+	format := uint8(FormatV1)
 	if req.Format != nil {
 		format = uint8(*req.Format)
 	}
@@ -302,7 +298,7 @@ func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, identity
 	var blob []byte
 
 	switch format {
-	case crypto.FormatV0:
+	case FormatV0:
 		if req.EncryptionKey == "" {
 			writeError(w, http.StatusBadRequest, "encryption_key is required for v0 format")
 			return
@@ -312,14 +308,14 @@ func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, identity
 			writeError(w, http.StatusBadRequest, "invalid base64 encryption_key")
 			return
 		}
-		blob, err = crypto.SealV0(value, userKey)
+		blob, err = SealV0(value, userKey)
 		if err != nil {
 			log.Errorf("failed to seal v0: %v", err)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
-	case crypto.FormatV1:
+	case FormatV1:
 		userKeys, err := decodeEncryptionKeys(req.EncryptionKeys)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -336,14 +332,14 @@ func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, identity
 			return
 		}
 		if existing != nil {
-			meta, err := crypto.Metadata(existing)
-			if err == nil && meta.FormatVersion == crypto.FormatV1 {
+			meta, err := Metadata(existing)
+			if err == nil && meta.FormatVersion == FormatV1 {
 				version = meta.ValueVersion + 1
 				createdAt = meta.CreatedAt
 			}
 		}
 
-		blob, err = crypto.Seal(value, userKeys, createdAt, version)
+		blob, err = Seal(value, userKeys, createdAt, version)
 		if err != nil {
 			log.Errorf("failed to seal v1: %v", err)
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -371,7 +367,7 @@ func (h *ItemHandler) handlePut(w http.ResponseWriter, r *http.Request, identity
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, identity identity.Identity, key string) {
+func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, identity Identity, key string) {
 	encKeyB64 := r.Header.Get("X-Encryption-Key")
 	if encKeyB64 == "" {
 		writeError(w, http.StatusBadRequest, "X-Encryption-Key header is required")
@@ -395,17 +391,17 @@ func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, identity
 		return
 	}
 
-	plaintext, meta, err := crypto.Open(data, userKey)
+	plaintext, meta, err := Open(data, userKey)
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch err {
-		case crypto.ErrKeyNotFound:
+		case ErrKeyNotFound:
 			status = http.StatusForbidden
-		case crypto.ErrDecryptionFailed:
+		case ErrDecryptionFailed:
 			status = http.StatusForbidden
-		case crypto.ErrInvalidKeySize:
+		case ErrInvalidKeySize:
 			status = http.StatusBadRequest
-		case crypto.ErrInvalidEnvelope:
+		case ErrInvalidEnvelope:
 			status = http.StatusInternalServerError
 		}
 		writeError(w, status, err.Error())
@@ -416,7 +412,7 @@ func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, identity
 		Value:  base64.StdEncoding.EncodeToString(plaintext),
 		Format: meta.FormatVersion,
 	}
-	if meta.FormatVersion == crypto.FormatV1 {
+	if meta.FormatVersion == FormatV1 {
 		resp.Version = meta.ValueVersion
 		resp.CreatedAt = meta.CreatedAt.UTC().Format(time.RFC3339Nano)
 	}
@@ -428,7 +424,7 @@ func (h *ItemHandler) handleGet(w http.ResponseWriter, r *http.Request, identity
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, identity identity.Identity, key string) {
+func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, identity Identity, key string) {
 	data, err := h.store.Get(r.Context(), key)
 	if err != nil {
 		log.Errorf("failed to get: %v", err)
@@ -440,14 +436,14 @@ func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, identit
 		return
 	}
 
-	meta, err := crypto.Metadata(data)
+	meta, err := Metadata(data)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "corrupt envelope")
 		return
 	}
 
 	w.Header().Set("X-Format", strconv.Itoa(int(meta.FormatVersion)))
-	if meta.FormatVersion == crypto.FormatV1 {
+	if meta.FormatVersion == FormatV1 {
 		w.Header().Set("X-Version", strconv.FormatUint(meta.ValueVersion, 10))
 		w.Header().Set("X-Created-At", meta.CreatedAt.UTC().Format(time.RFC3339Nano))
 		w.Header().Set("X-Num-Encryption-Keys", strconv.Itoa(len(meta.KeySlots)))
@@ -466,7 +462,7 @@ func (h *ItemHandler) handleHead(w http.ResponseWriter, r *http.Request, identit
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *ItemHandler) handleDelete(w http.ResponseWriter, r *http.Request, identity identity.Identity, key string) {
+func (h *ItemHandler) handleDelete(w http.ResponseWriter, r *http.Request, identity Identity, key string) {
 	if err := h.store.Delete(r.Context(), key); err != nil {
 		log.Errorf("failed to delete: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
@@ -478,7 +474,7 @@ func (h *ItemHandler) handleDelete(w http.ResponseWriter, r *http.Request, ident
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, identity identity.Identity, key string) {
+func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, identity Identity, key string) {
 	var req AddKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -507,17 +503,17 @@ func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, ident
 		return
 	}
 
-	updated, err := crypto.AddKeySlot(data, existingKey, newKey)
+	updated, err := AddKeySlot(data, existingKey, newKey)
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch err {
-		case crypto.ErrKeyNotFound, crypto.ErrDecryptionFailed:
+		case ErrKeyNotFound, ErrDecryptionFailed:
 			status = http.StatusForbidden
-		case crypto.ErrDuplicateKey:
+		case ErrDuplicateKey:
 			status = http.StatusConflict
-		case crypto.ErrInvalidKeySize:
+		case ErrInvalidKeySize:
 			status = http.StatusBadRequest
-		case crypto.ErrV0NoKeySlots:
+		case ErrV0NoKeySlots:
 			status = http.StatusBadRequest
 		}
 		writeError(w, status, err.Error())
@@ -535,7 +531,7 @@ func (h *ItemHandler) handleAddKey(w http.ResponseWriter, r *http.Request, ident
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, identity identity.Identity, key string) {
+func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, identity Identity, key string) {
 	var req RemoveKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -564,17 +560,17 @@ func (h *ItemHandler) handleRemoveKey(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	updated, err := crypto.RemoveKeySlot(data, existingKey, removeKey)
+	updated, err := RemoveKeySlot(data, existingKey, removeKey)
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch err {
-		case crypto.ErrKeyNotFound, crypto.ErrDecryptionFailed:
+		case ErrKeyNotFound, ErrDecryptionFailed:
 			status = http.StatusForbidden
-		case crypto.ErrLastKey:
+		case ErrLastKey:
 			status = http.StatusConflict
-		case crypto.ErrInvalidKeySize:
+		case ErrInvalidKeySize:
 			status = http.StatusBadRequest
-		case crypto.ErrV0NoKeySlots:
+		case ErrV0NoKeySlots:
 			status = http.StatusBadRequest
 		}
 		writeError(w, status, err.Error())

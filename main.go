@@ -9,25 +9,19 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-
-	"github.com/tinfoilsh/tinfoil-buckets/identity"
-	"github.com/tinfoilsh/tinfoil-buckets/config"
-	"github.com/tinfoilsh/tinfoil-buckets/handler"
-	"github.com/tinfoilsh/tinfoil-buckets/store"
-	"github.com/tinfoilsh/tinfoil-buckets/usage"
 )
 
 func main() {
-	cfg := config.Load()
+	cfg := Load()
 
 	if cfg.CloudflareAccountID == "" || cfg.R2AccessKeyID == "" || cfg.R2SecretAccessKey == "" {
 		log.Fatal("CLOUDFLARE_ACCOUNT_ID, R2_TINFOIL_BUCKET_ACCESS_KEY_ID, and R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY must be set")
 	}
 
-	r2 := store.NewR2Store(cfg.CloudflareAccountID, cfg.R2AccessKeyID, cfg.R2SecretAccessKey, cfg.R2BucketName)
-	resolver := identity.NewHTTPResolver(cfg.ControlPlaneURL)
+	r2 := NewR2Store(cfg.CloudflareAccountID, cfg.R2AccessKeyID, cfg.R2SecretAccessKey, cfg.R2BucketName)
+	resolver := NewHTTPResolver(cfg.ControlPlaneURL)
 
-	reporter, err := usage.NewReporter(cfg.ControlPlaneURL, cfg.UsageReporterID, cfg.UsageReporterSecret)
+	reporter, err := NewReporter(cfg.ControlPlaneURL, cfg.UsageReporterID, cfg.UsageReporterSecret)
 	if err != nil {
 		log.Fatalf("Failed to create usage reporter: %v", err)
 	}
@@ -39,7 +33,7 @@ func main() {
 		}
 	}()
 
-	itemHandler := handler.NewItemHandler(r2, resolver, reporter)
+	itemHandler := NewItemHandler(r2, resolver, reporter)
 
 	mux := http.NewServeMux()
 	mux.Handle("/items/", itemHandler)

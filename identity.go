@@ -4,7 +4,7 @@
 // R2 storage keys per tenant. Validity of the API key is enforced by the
 // shim before the request reaches this service; this lookup is identity
 // only.
-package identity
+package main
 
 import (
 	"bytes"

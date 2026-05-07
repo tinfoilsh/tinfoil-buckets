@@ -1,4 +1,4 @@
-package usage
+package main
 
 import (
 	"context"
@@ -10,8 +10,6 @@ import (
 
 	usageclient "github.com/tinfoilsh/usage-reporting-go/client"
 	"github.com/tinfoilsh/usage-reporting-go/contract"
-
-	"github.com/tinfoilsh/tinfoil-buckets/identity"
 )
 
 const serviceName = "buckets"
@@ -63,20 +61,20 @@ func validateEndpoint(endpoint string) error {
 // per-operation price configured in meter_pricing.json. The bearer API key
 // is used for owner attribution; the resolved identity is attached as
 // attributes for observability.
-func (r *Reporter) ReportOperation(req *http.Request, identity identity.Identity, operationName string, attributes map[string]string) {
+func (r *Reporter) ReportOperation(req *http.Request, id Identity, operationName string, attributes map[string]string) {
 	if r == nil || r.client == nil || !r.client.Enabled() {
 		return
 	}
-	apiKey := bearerToken(req.Header.Get("Authorization"))
-	if apiKey == "" {
+	apiKey, err := bearerToken(req.Header.Get("Authorization"))
+	if err != nil || apiKey == "" {
 		return
 	}
 
 	attrs := map[string]string{
-		"user_id": identity.UserID,
+		"user_id": id.UserID,
 	}
-	if identity.OrgID != "" {
-		attrs["org_id"] = identity.OrgID
+	if id.OrgID != "" {
+		attrs["org_id"] = id.OrgID
 	}
 	for k, v := range attributes {
 		attrs[k] = v
@@ -101,12 +99,4 @@ func (r *Reporter) Close(ctx context.Context) error {
 		return nil
 	}
 	return r.client.Stop(ctx)
-}
-
-func bearerToken(authHeader string) string {
-	parts := strings.Fields(strings.TrimSpace(authHeader))
-	if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-		return parts[1]
-	}
-	return ""
 }

@@ -1,4 +1,4 @@
-package store
+package main
 
 import (
 	"bytes"
@@ -108,4 +108,3 @@ func TestExists(t *testing.T) {
 		t.Fatal("expected true")
 	}
 }
-
