@@ -12,6 +12,8 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+
+	"github.com/tinfoilsh/usage-reporting-go/contract"
 )
 
 // UsageReporter records one usage event per successful storage operation.
@@ -88,12 +90,12 @@ const (
 )
 
 const (
-	operationPutObject    = "put_object"
-	operationGetObject    = "get_object"
-	operationHeadObject   = "head_object"
-	operationDeleteObject = "delete_object"
-	operationAddKey       = "add_key"
-	operationRemoveKey    = "remove_key"
+	operationPutObject    = contract.OperationBucketsPutObject
+	operationGetObject    = contract.OperationBucketsGetObject
+	operationHeadObject   = contract.OperationBucketsHeadObject
+	operationDeleteObject = contract.OperationBucketsDeleteObject
+	operationAddKey       = contract.OperationBucketsAddKey
+	operationRemoveKey    = contract.OperationBucketsRemoveKey
 )
 
 func validateAccessToken(accessToken string) error {

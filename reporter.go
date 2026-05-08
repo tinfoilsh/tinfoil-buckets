@@ -12,8 +12,6 @@ import (
 	"github.com/tinfoilsh/usage-reporting-go/contract"
 )
 
-const serviceName = "buckets"
-
 type Reporter struct {
 	client *usageclient.ReporterClient
 }
@@ -26,18 +24,15 @@ func NewReporter(controlPlaneURL, reporterID, secret string) (*Reporter, error) 
 	if endpoint == "" || secret == "" {
 		return &Reporter{client: usageclient.New(usageclient.Config{})}, nil
 	}
-	endpoint += "/api/internal/usage-reports"
+	endpoint += contract.IngestionPath
 	if err := validateEndpoint(endpoint); err != nil {
 		return nil, err
 	}
 	return &Reporter{
 		client: usageclient.New(usageclient.Config{
-			Endpoint: endpoint,
-			Reporter: contract.Reporter{
-				ID:      reporterID,
-				Service: serviceName,
-			},
-			Secret: secret,
+			Endpoint:   endpoint,
+			ReporterID: reporterID,
+			Secret:     secret,
 		}),
 	}, nil
 }
@@ -57,9 +52,9 @@ func validateEndpoint(endpoint string) error {
 }
 
 // ReportOperation emits a single usage event for the given operation. Each
-// event carries one `requests` meter so the controlplane can charge a flat
-// per-operation price configured in meter_pricing.json. The bearer API key
-// is used for owner attribution; the resolved identity is attached as
+// event carries CustomerRequests=1 so the controlplane can charge a flat
+// per-operation price keyed by (service, operation). The bearer API key is
+// used for owner attribution; the resolved identity is attached as
 // attributes for observability.
 func (r *Reporter) ReportOperation(req *http.Request, id Identity, operationName string, attributes map[string]string) {
 	if r == nil || r.client == nil || !r.client.Enabled() {
@@ -84,19 +79,17 @@ func (r *Reporter) ReportOperation(req *http.Request, id Identity, operationName
 		OccurredAt: time.Now().UTC(),
 		APIKey:     apiKey,
 		Operation: contract.Operation{
-			Service: serviceName,
+			Service: contract.ServiceBuckets,
 			Name:    operationName,
 		},
-		Meters: []contract.Meter{
-			{Name: "requests", Quantity: 1},
-		},
-		Attributes: attrs,
+		CustomerRequests: 1,
+		Attributes:       attrs,
 	})
 }
 
-func (r *Reporter) Close(ctx context.Context) error {
+func (r *Reporter) Close(ctx context.Context) {
 	if r == nil || r.client == nil {
-		return nil
+		return
 	}
-	return r.client.Stop(ctx)
+	r.client.Stop(ctx)
 }

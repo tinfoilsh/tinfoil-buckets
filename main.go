@@ -28,9 +28,7 @@ func main() {
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := reporter.Close(ctx); err != nil {
-			log.Warnf("usage reporter shutdown: %v", err)
-		}
+		reporter.Close(ctx)
 	}()
 
 	itemHandler := NewItemHandler(r2, resolver, reporter)
