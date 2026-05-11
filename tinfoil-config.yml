@@ -9,10 +9,12 @@ containers:
     env:
       - R2_BUCKET_NAME: "tinfoil-bucket"
       - CONTROL_PLANE_URL: "https://api.tinfoil.sh"
+      - USAGE_REPORTER_ID: "tinfoil-buckets"
     secrets:
       - CLOUDFLARE_ACCOUNT_ID
       - R2_TINFOIL_BUCKET_ACCESS_KEY_ID
       - R2_TINFOIL_BUCKET_SECRET_ACCESS_KEY
+      - USAGE_REPORTER_SECRET
 
 shim:
   listen-port: 443
@@ -21,3 +23,6 @@ shim:
     - /items/*
     - /mcp
     - /health
+  authenticated: true
+  authenticated-endpoints:
+    - /items/*

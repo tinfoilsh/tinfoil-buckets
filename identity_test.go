@@ -1,4 +1,4 @@
-package auth
+package main
 
 import (
 	"context"
@@ -22,7 +22,7 @@ type capturedRequest struct {
 
 // TestHTTPResolverSendsAPIKeyField guards against the regression where the
 // kvstore was sending {"token": ...} while controlplane's
-// /api/shim/identity expects {"api_key": ...}. Fail this test and
+// /api/internal/key-identity expects {"api_key": ...}. Fail this test and
 // production identity lookups break silently with a 400 from controlplane.
 func TestHTTPResolverSendsAPIKeyField(t *testing.T) {
 	captured := make(chan capturedRequest, 1)
@@ -45,8 +45,8 @@ func TestHTTPResolverSendsAPIKeyField(t *testing.T) {
 	if got.method != http.MethodPost {
 		t.Errorf("method: got %q, want POST", got.method)
 	}
-	if got.path != "/api/shim/identity" {
-		t.Errorf("path: got %q, want /api/shim/identity", got.path)
+	if got.path != "/api/internal/key-identity" {
+		t.Errorf("path: got %q, want /api/internal/key-identity", got.path)
 	}
 	if v := got.body["api_key"]; v != "ak_abc123" {
 		t.Errorf("api_key field: got %v, want %q", v, "ak_abc123")

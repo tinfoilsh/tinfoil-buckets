@@ -1,6 +1,7 @@
 .env 
 .idea/
 confidential-websearch
+tinfoil-buckets
 ext.yml
 tuf-repo-cdn.sigstore.dev.json
 evals/.env

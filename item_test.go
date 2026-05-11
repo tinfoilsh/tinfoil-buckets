@@ -1,4 +1,4 @@
-package handler
+package main
 
 import (
 	"bytes"
@@ -7,67 +7,24 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-
-	"github.com/tinfoilsh/tinfoil-buckets/auth"
-	"github.com/tinfoilsh/tinfoil-buckets/store"
 )
 
 const testAPIKey = "tk_test_key_used_in_unit_tests_only"
 
-type mockS3 struct {
-	objects map[string][]byte
-}
-
-func newMockS3() *mockS3 {
-	return &mockS3{objects: make(map[string][]byte)}
-}
-
-func (m *mockS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
-	data, _ := io.ReadAll(input.Body)
-	m.objects[*input.Key] = data
-	return &s3.PutObjectOutput{}, nil
-}
-
-func (m *mockS3) GetObject(_ context.Context, input *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
-	data, ok := m.objects[*input.Key]
-	if !ok {
-		return nil, &types.NoSuchKey{}
-	}
-	return &s3.GetObjectOutput{
-		Body: io.NopCloser(bytes.NewReader(data)),
-	}, nil
-}
-
-func (m *mockS3) DeleteObject(_ context.Context, input *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
-	delete(m.objects, *input.Key)
-	return &s3.DeleteObjectOutput{}, nil
-}
-
-func (m *mockS3) HeadObject(_ context.Context, input *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
-	if _, ok := m.objects[*input.Key]; !ok {
-		return nil, &types.NoSuchKey{}
-	}
-	return &s3.HeadObjectOutput{}, nil
-}
-
 // stubResolver returns a fixed identity for any token. err, when set,
 // short-circuits Resolve before consulting identity.
 type stubResolver struct {
-	identity auth.Identity
+	identity Identity
 	err      error
 }
 
-func (s *stubResolver) Resolve(_ context.Context, _ string) (auth.Identity, error) {
+func (s *stubResolver) Resolve(_ context.Context, _ string) (Identity, error) {
 	if s.err != nil {
-		return auth.Identity{}, s.err
+		return Identity{}, s.err
 	}
 	return s.identity, nil
 }
@@ -81,7 +38,7 @@ func randomKeyB64(t *testing.T) string {
 
 // randomAccessToken returns a 36-char hex string suitable for use as an
 // accessToken (satisfies minAccessTokenLength=36 and contains no
-// URL-special chars). The accessToken is the URL handle, not auth.
+// URL-special chars). The accessToken is the URL handle, not identity.
 func randomAccessToken(t *testing.T) string {
 	t.Helper()
 	b := make([]byte, 18)
@@ -104,13 +61,13 @@ func authReq(method, target string, body []byte) *http.Request {
 
 func setupHandler() (*ItemHandler, *mockS3) {
 	m := newMockS3()
-	s := store.NewR2StoreWithClient(m, "test")
-	return NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_test"}}), m
+	s := NewR2StoreWithClient(m, "test")
+	return NewItemHandler(s, &stubResolver{identity: Identity{UserID: "user_test"}}, nil), m
 }
 
-func setupHandlerWithResolver(resolver auth.Resolver) *ItemHandler {
-	s := store.NewR2StoreWithClient(newMockS3(), "test")
-	return NewItemHandler(s, resolver)
+func setupHandlerWithResolver(resolver Resolver) *ItemHandler {
+	s := NewR2StoreWithClient(newMockS3(), "test")
+	return NewItemHandler(s, resolver, nil)
 }
 
 func TestPutAndGet(t *testing.T) {
@@ -153,7 +110,7 @@ func TestPutAndGet(t *testing.T) {
 	}
 }
 
-func TestGetNotFound(t *testing.T) {
+func TestHandleGetNotFound(t *testing.T) {
 	h, _ := setupHandler()
 	key := randomKeyB64(t)
 
@@ -367,7 +324,7 @@ func TestV0PutAndGet(t *testing.T) {
 	}
 }
 
-func TestV0WrongKey(t *testing.T) {
+func TestHandleV0WrongKey(t *testing.T) {
 	h, _ := setupHandler()
 	key := randomKeyB64(t)
 	wrongKey := randomKeyB64(t)
@@ -602,8 +559,8 @@ func TestHeadReturnsFingerprints(t *testing.T) {
 
 func TestStorageKeyOrgPrefix(t *testing.T) {
 	m := newMockS3()
-	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}})
+	s := NewR2StoreWithClient(m, "test")
+	h := NewItemHandler(s, &stubResolver{identity: Identity{UserID: "user_x", OrgID: "org_y"}}, nil)
 
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -625,8 +582,8 @@ func TestStorageKeyOrgPrefix(t *testing.T) {
 
 func TestStorageKeyUserPrefix(t *testing.T) {
 	m := newMockS3()
-	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x"}})
+	s := NewR2StoreWithClient(m, "test")
+	h := NewItemHandler(s, &stubResolver{identity: Identity{UserID: "user_x"}}, nil)
 
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -652,8 +609,8 @@ func TestStorageKeyV0OrgPrefix(t *testing.T) {
 	// is format-blind, but assert it explicitly so a regression there is
 	// caught for both formats.
 	m := newMockS3()
-	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}})
+	s := NewR2StoreWithClient(m, "test")
+	h := NewItemHandler(s, &stubResolver{identity: Identity{UserID: "user_x", OrgID: "org_y"}}, nil)
 
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -676,8 +633,8 @@ func TestStorageKeyV0OrgPrefix(t *testing.T) {
 
 func TestStorageKeyWithSegments(t *testing.T) {
 	m := newMockS3()
-	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x", OrgID: "org_y"}})
+	s := NewR2StoreWithClient(m, "test")
+	h := NewItemHandler(s, &stubResolver{identity: Identity{UserID: "user_x", OrgID: "org_y"}}, nil)
 
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -702,8 +659,8 @@ func TestSegmentsIsolateNamespaces(t *testing.T) {
 	// Same accessToken, same encryption key, two different X-Item-Path
 	// values must produce two distinct items.
 	m := newMockS3()
-	s := store.NewR2StoreWithClient(m, "test")
-	h := NewItemHandler(s, &stubResolver{identity: auth.Identity{UserID: "user_x"}})
+	s := NewR2StoreWithClient(m, "test")
+	h := NewItemHandler(s, &stubResolver{identity: Identity{UserID: "user_x"}}, nil)
 
 	encKey := randomKeyB64(t)
 	tok := randomAccessToken(t)
@@ -831,7 +788,7 @@ func TestEmptyBearerReturns401(t *testing.T) {
 }
 
 func TestInvalidTokenReturns401(t *testing.T) {
-	h := setupHandlerWithResolver(&stubResolver{err: auth.ErrInvalidToken})
+	h := setupHandlerWithResolver(&stubResolver{err: ErrInvalidToken})
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("data"))
@@ -847,7 +804,7 @@ func TestInvalidTokenReturns401(t *testing.T) {
 }
 
 func TestUpstreamUnavailableReturns502(t *testing.T) {
-	h := setupHandlerWithResolver(&stubResolver{err: auth.ErrUpstreamUnavailable})
+	h := setupHandlerWithResolver(&stubResolver{err: ErrUpstreamUnavailable})
 	key := randomKeyB64(t)
 	tok := randomAccessToken(t)
 	value := base64.StdEncoding.EncodeToString([]byte("data"))

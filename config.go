@@ -1,4 +1,4 @@
-package config
+package main
 
 import "os"
 
@@ -9,6 +9,8 @@ type Config struct {
 	R2BucketName        string
 	ListenAddr          string
 	ControlPlaneURL     string
+	UsageReporterID     string
+	UsageReporterSecret string
 }
 
 func Load() *Config {
@@ -19,6 +21,8 @@ func Load() *Config {
 		R2BucketName:        getEnv("R2_BUCKET_NAME", "tinfoil-bucket"),
 		ListenAddr:          getEnv("LISTEN_ADDR", ":8089"),
 		ControlPlaneURL:     getEnv("CONTROL_PLANE_URL", "https://api.tinfoil.sh"),
+		UsageReporterID:     getEnv("USAGE_REPORTER_ID", "tinfoil-buckets"),
+		UsageReporterSecret: os.Getenv("USAGE_REPORTER_SECRET"),
 	}
 }
 
