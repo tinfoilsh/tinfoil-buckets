@@ -2,7 +2,6 @@ package main
 
 import "net/http"
 
-// Origins allowed to call buckets directly from a browser.
 var allowedOrigins = map[string]struct{}{
 	"https://chat.tinfoil.sh":    {},
 	"https://preview.tinfoil.sh": {},
