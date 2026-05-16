@@ -3,13 +3,13 @@ cpus: 2
 memory: 4096
 
 networks:
-  egress:
+  public:
     egress: open
 
 containers:
   - name: "tinfoil-buckets"
     image: "ghcr.io/tinfoilsh/tinfoil-buckets@sha256:216b1f9e880b3f268a7dfe8383d95d95a1a31843268661363e58f54272e06986" # v0.0.8
-    networks: [egress]
+    networks: [public]
     env:
       - R2_BUCKET_NAME: "tinfoil-bucket"
       - CONTROL_PLANE_URL: "https://api.tinfoil.sh"
