@@ -4,7 +4,7 @@ memory: 4096
 
 containers:
   - name: "tinfoil-buckets"
-    image: "ghcr.io/tinfoilsh/tinfoil-buckets@sha256:3fb70f811789fb02cf19a147993132cb754ff42ba71b7adba029ef34a9c37182" # v0.0.7
+    image: "ghcr.io/tinfoilsh/tinfoil-buckets@sha256:216b1f9e880b3f268a7dfe8383d95d95a1a31843268661363e58f54272e06986" # v0.0.8
     env:
       - R2_BUCKET_NAME: "tinfoil-bucket"
       - CONTROL_PLANE_URL: "https://api.tinfoil.sh"
