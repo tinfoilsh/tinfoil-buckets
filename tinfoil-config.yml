@@ -2,9 +2,18 @@ cvm-version: 0.10.1
 cpus: 2
 memory: 4096
 
+# cvm v0.10.x containers are default-isolated (only the shim is
+# reachable). The container needs to reach controlplane (identity
+# lookup) and R2 (storage); declaring an open-egress network restores
+# public-internet access. RFC1918 and link-local are still dropped.
+networks:
+  egress:
+    egress: open
+
 containers:
   - name: "tinfoil-buckets"
     image: "ghcr.io/tinfoilsh/tinfoil-buckets@sha256:216b1f9e880b3f268a7dfe8383d95d95a1a31843268661363e58f54272e06986" # v0.0.8
+    networks: [egress]
     env:
       - R2_BUCKET_NAME: "tinfoil-bucket"
       - CONTROL_PLANE_URL: "https://api.tinfoil.sh"
