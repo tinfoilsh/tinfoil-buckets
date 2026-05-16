@@ -8,7 +8,7 @@ networks:
 
 containers:
   - name: "tinfoil-buckets"
-    image: "ghcr.io/tinfoilsh/tinfoil-buckets@sha256:216b1f9e880b3f268a7dfe8383d95d95a1a31843268661363e58f54272e06986" # v0.0.8
+    image: "ghcr.io/tinfoilsh/tinfoil-buckets@sha256:1b49ab141137bc9b48e756789d275a0920924e13ac934cf3bd977bfe52d868e2" # v0.0.9
     networks: [public]
     env:
       - R2_BUCKET_NAME: "tinfoil-bucket"
