@@ -42,7 +42,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:         cfg.ListenAddr,
-		Handler:      mux,
+		Handler:      corsMiddleware(mux),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 	}
